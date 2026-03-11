@@ -254,11 +254,15 @@ canvas{max-height:190px;}
 <!-- MARCHÉS -->
 
 <div id="s-market" class="sec on">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-family:var(--mono);font-size:10px;color:var(--muted)">
+    <div id="data-status-dot" style="width:6px;height:6px;border-radius:50%;background:var(--muted);flex-shrink:0"></div>
+    <span id="data-status-txt">Chargement des données en direct…</span>
+  </div>
   <div class="ticker" id="ticker"><div class="spin"></div></div>
   <div class="g3">
-    <div class="card"><div class="cl">CAC 40 <span class="src-badge src-sim">SIMULÉ</span></div><div class="cv up" id="v-cac">—</div><div class="cs" id="s-cac">…</div></div>
-    <div class="card"><div class="cl">S&amp;P 500 <span class="src-badge src-sim">SIMULÉ</span></div><div class="cv up" id="v-sp">—</div><div class="cs" id="s-sp">…</div></div>
-    <div class="card"><div class="cl">Bitcoin <span class="src-badge src-live">LIVE</span></div><div class="cv" style="color:var(--gold)" id="v-btc">—</div><div class="cs" id="s-btc">…</div></div>
+    <div class="card"><div class="cl">CAC 40 <span class="src-badge" id="badge-cac">…</span></div><div class="cv up" id="v-cac">—</div><div class="cs" id="s-cac">…</div></div>
+    <div class="card"><div class="cl">S&amp;P 500 <span class="src-badge" id="badge-sp">…</span></div><div class="cv up" id="v-sp">—</div><div class="cs" id="s-sp">…</div></div>
+    <div class="card"><div class="cl">Bitcoin <span class="src-badge" id="badge-btc">…</span></div><div class="cv" style="color:var(--gold)" id="v-btc">—</div><div class="cs" id="s-btc">…</div></div>
   </div>
   <div class="cc">
     <div class="ch">
@@ -440,148 +444,349 @@ function startClock(){ setInterval(()=>document.getElementById('clock').textCont
 // ══ TABS ══
 function go(n,el){ document.querySelectorAll('.sec').forEach(s=>s.classList.remove('on')); document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on')); document.getElementById('s-'+n).classList.add('on'); el.classList.add('on'); }
 
-// ══ DONNÉES LIVE CRYPTO via CoinGecko ══
-let liveCrypto = {}; // données réelles
+// ══════════════════════════════════════════════
+// ÉTAPE 3A — DONNÉES LIVE : Yahoo Finance + CoinGecko
+// ══════════════════════════════════════════════
+let liveStocks = {}; // { cac, sp, nvda, lvmh, tsla, gold }
 
-async function fetchLiveCrypto(){
+const YF_SYMBOLS = {
+  cac:  '^FCHI',
+  sp:   '^GSPC',
+  nvda: 'NVDA',
+  lvmh: 'MC.PA',
+  tsla: 'TSLA',
+  gold: 'GC=F',
+  eurusd: 'EURUSD=X',
+};
+
+// Fetch avec timeout pour ne jamais bloquer
+async function fetchWithTimeout(url, ms=8000){
+  const ctrl = new AbortController();
+  const tid = setTimeout(()=>ctrl.abort(), ms);
   try {
-    // Utilise un proxy CORS public pour contourner le blocage navigateur
-    const url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd,eur&include_24hr_change=true&include_market_cap=true';
-    const res = await fetch(url, {headers:{'Accept':'application/json'}});
-    if(!res.ok) throw new Error('CoinGecko '+res.status);
-    const d = await res.json();
-    liveCrypto = d;
-    // Mettre à jour taux EUR/USD depuis les données crypto
-    if(d.bitcoin?.usd && d.bitcoin?.eur){
-      EUR_USD = d.bitcoin.usd / d.bitcoin.eur;
-    }
-    // Synchroniser avec nos données simulées
-    if(d.bitcoin?.usd) M.btc.v = d.bitcoin.usd;
-    if(d.ethereum?.usd) M.eth.v = d.ethereum.usd;
-    console.log('✅ Crypto live chargé:', d.bitcoin?.usd, d.ethereum?.usd);
+    const res = await fetch(url, {signal: ctrl.signal});
+    clearTimeout(tid);
+    return res;
   } catch(e) {
-    console.warn('CoinGecko bloqué, données simulées:', e.message);
+    clearTimeout(tid);
+    throw e;
   }
 }
 
-// ══ MARCHÉ (actions simulées, crypto live) ══
+async function fetchYahooQuote(symbol){
+  const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=2d`;
+  // Essaie plusieurs proxies CORS en cascade
+  const proxies = [
+    `https://corsproxy.io/?${encodeURIComponent(yfUrl)}`,
+    `https://api.allorigins.win/get?url=${encodeURIComponent(yfUrl)}`,
+  ];
+  for(const proxy of proxies){
+    try {
+      const res = await fetchWithTimeout(proxy, 7000);
+      if(!res.ok) continue;
+      const raw = await res.json();
+      // allOrigins encapsule dans .contents, corsproxy.io renvoie directement
+      const text = raw.contents || (typeof raw === 'object' ? JSON.stringify(raw) : await raw);
+      const data = typeof text === 'string' ? JSON.parse(text) : raw;
+      const q = data?.chart?.result?.[0];
+      if(!q) continue;
+      const meta  = q.meta;
+      const price = meta.regularMarketPrice;
+      const prev  = meta.chartPreviousClose || meta.previousClose || price;
+      return { price, prev };
+    } catch(e){ continue; }
+  }
+  throw new Error('Tous les proxies ont échoué pour '+symbol);
+}
+
+async function fetchLiveStocks(){
+  const keys = Object.keys(YF_SYMBOLS);
+  // Timeout global de 10s — on n'attend jamais plus
+  const results = await Promise.allSettled(
+    keys.map(k =>
+      Promise.race([
+        fetchYahooQuote(YF_SYMBOLS[k]).then(v => ({k, v})),
+        new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')), 10000))
+      ])
+    )
+  );
+  let count = 0;
+  results.forEach(r => {
+    if(r.status === 'fulfilled'){
+      const {k, v} = r.value;
+      count++;
+      liveStocks[k] = v;
+      if(k === 'eurusd'){
+        EUR_USD = v.price;
+      } else if(M[k]){
+        M[k].v = v.price;
+        M[k].b = v.prev || v.price;
+      }
+    }
+  });
+  if(count > 0){
+    updateStatusBar('Yahoo Finance');
+  } else {
+    const dot = document.getElementById('data-status-dot');
+    const txt = document.getElementById('data-status-txt');
+    if(dot) dot.style.background='var(--gold)';
+    if(txt) txt.textContent = `Mode simulation — Yahoo Finance indisponible`;
+  }
+}
+
+// ══ DONNÉES LIVE CRYPTO — 4 sources en cascade, toujours une qui marche ══
+let liveCrypto = {};
+
+async function fetchCryptoFromBinance(){
+  // Binance API publique — pas de CORS sur les APIs publiques Binance
+  const [btcRes, ethRes] = await Promise.all([
+    fetchWithTimeout('https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT', 6000),
+    fetchWithTimeout('https://api.binance.com/api/v3/ticker/24hr?symbol=ETHUSDT', 6000),
+  ]);
+  const btc = await btcRes.json();
+  const eth = await ethRes.json();
+  return {
+    btc: { usd: parseFloat(btc.lastPrice), chg: parseFloat(btc.priceChangePercent), prev: parseFloat(btc.prevClosePrice) },
+    eth: { usd: parseFloat(eth.lastPrice), chg: parseFloat(eth.priceChangePercent), prev: parseFloat(eth.prevClosePrice) },
+  };
+}
+
+async function fetchCryptoFromKraken(){
+  // Kraken API publique — pas de CORS
+  const res = await fetchWithTimeout('https://api.kraken.com/0/public/Ticker?pair=XBTUSD,ETHUSD', 6000);
+  const d = await res.json();
+  const btcD = d.result?.XXBTZUSD;
+  const ethD = d.result?.XETHZUSD;
+  if(!btcD || !ethD) throw new Error('Kraken: données manquantes');
+  return {
+    btc: { usd: parseFloat(btcD.c[0]), chg: 0, prev: parseFloat(btcD.o) },
+    eth: { usd: parseFloat(ethD.c[0]), chg: 0, prev: parseFloat(ethD.o) },
+  };
+}
+
+async function fetchCryptoViaCorsProxy(){
+  // CoinGecko via proxy CORS comme fallback
+  const cgUrl = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd,eur&include_24hr_change=true';
+  const proxied = `https://corsproxy.io/?${encodeURIComponent(cgUrl)}`;
+  const res = await fetchWithTimeout(proxied, 7000);
+  const d = await res.json();
+  if(!d.bitcoin) throw new Error('CoinGecko proxy: pas de données');
+  return {
+    btc: { usd: d.bitcoin.usd, chg: d.bitcoin.usd_24h_change||0, prev: d.bitcoin.usd/(1+(d.bitcoin.usd_24h_change||0)/100) },
+    eth: { usd: d.ethereum.usd, chg: d.ethereum.usd_24h_change||0, prev: d.ethereum.usd/(1+(d.ethereum.usd_24h_change||0)/100) },
+    eurUsd: d.bitcoin.usd / d.bitcoin.eur,
+  };
+}
+
+async function fetchLiveCrypto(){
+  const sources = [
+    { name:'Binance',      fn: fetchCryptoFromBinance },
+    { name:'Kraken',       fn: fetchCryptoFromKraken },
+    { name:'CoinGecko',    fn: fetchCryptoViaCorsProxy },
+  ];
+  for(const src of sources){
+    try {
+      const d = await src.fn();
+      // Injecter dans M
+      M.btc.v = d.btc.usd;
+      M.btc.b = d.btc.prev || d.btc.usd;
+      M.eth.v = d.eth.usd;
+      M.eth.b = d.eth.prev || d.eth.usd;
+      if(d.eurUsd) EUR_USD = d.eurUsd;
+      // Marquer comme live
+      liveCrypto = { bitcoin: { usd: d.btc.usd }, ethereum: { usd: d.eth.usd } };
+      updateStatusBar(src.name);
+      console.log(`✅ Crypto live via ${src.name}:`, d.btc.usd, d.eth.usd);
+      return; // succès, on arrête
+    } catch(e){
+      console.warn(`⚠️ ${src.name} indisponible:`, e.message);
+    }
+  }
+  console.warn('❌ Toutes les sources crypto ont échoué — mode simulation');
+}
+
+function updateStatusBar(srcName){
+  const dot = document.getElementById('data-status-dot');
+  const txt = document.getElementById('data-status-txt');
+  const nbStocks = Object.keys(liveStocks).filter(k=>k!=='eurusd').length;
+  const nbCrypto = Object.keys(liveCrypto).length;
+  const total = nbStocks + nbCrypto;
+  if(dot) dot.style.background = total > 0 ? 'var(--green)' : 'var(--gold)';
+  if(txt) txt.textContent = total > 0
+    ? `Live · ${total} actifs · ${srcName} + Yahoo · ${new Date().toLocaleTimeString('fr-FR')}`
+    : `Mode simulation · données indisponibles`;
+}
+
+// ══ MARCHÉ — valeurs par défaut (remplacées par données live) ══
 const M={
-  cac: {v:7842, b:7842, vol:8,   tr:.3,  usd:true},
-  sp:  {v:5126, b:5126, vol:5,   tr:.2,  usd:true},
-  btc: {v:68420,b:68420,vol:80,  tr:0,   usd:true},
-  eth: {v:3580, b:3580, vol:15,  tr:0,   usd:true},
-  nvda:{v:880,  b:880,  vol:6,   tr:.5,  usd:true},
-  lvmh:{v:876,  b:876,  vol:4,   tr:.2,  usd:false}, // en EUR
-  tsla:{v:235,  b:235,  vol:5,   tr:-.3, usd:true},
-  gold:{v:3100, b:3100, vol:3,   tr:.1,  usd:true},
+  cac: {v:7842, b:7842, vol:8,  tr:.3,  eur:true},   // coté en EUR
+  sp:  {v:5700, b:5700, vol:5,  tr:.2,  eur:false},   // coté en USD
+  btc: {v:82000,b:82000,vol:80, tr:0,   eur:false},   // coté en USD
+  eth: {v:2000, b:2000, vol:15, tr:0,   eur:false},   // coté en USD
+  nvda:{v:110,  b:110,  vol:2,  tr:.5,  eur:false},
+  lvmh:{v:580,  b:580,  vol:4,  tr:.2,  eur:true},    // coté en EUR (MC.PA)
+  tsla:{v:260,  b:260,  vol:5,  tr:-.3, eur:false},
+  gold:{v:3100, b:3100, vol:3,  tr:.1,  eur:false},
 };
 const H={cac:[],sp:[],btc:[],eth:[]};const HL=60;
-function pct(k){return((M[k].v-M[k].b)/M[k].b*100).toFixed(2);}
+
+// pct = variation par rapport à base (clôture précédente)
+function pct(k){
+  if(M[k].b===0) return '0.00';
+  return((M[k].v-M[k].b)/M[k].b*100).toFixed(2);
+}
 function ar(v){return v>=0?'▲ +':'▼ ';}
 function cl(v){return v>=0?'up':'dn';}
 
-// Format prix selon si l'actif est en USD ou EUR natif
+// Format prix selon la devise courante
+// chaque actif a une devise native (eur:true = EUR, eur:false = USD)
 function fmtAsset(k){
-  const v = M[k].v;
-  if(k==='lvmh'){ // natif EUR
-    if(CUR==='USD') return '$'+(v*EUR_USD).toLocaleString('fr-FR',{maximumFractionDigits:0});
-    return '€'+v.toLocaleString('fr-FR',{maximumFractionDigits:0});
+  const raw = M[k].v;
+  const isEur = M[k].eur; // devise native de l'actif
+  if(isEur){
+    // natif EUR
+    if(CUR==='USD') return '$'+(raw*EUR_USD).toLocaleString('fr-FR',{maximumFractionDigits:2});
+    return '€'+raw.toLocaleString('fr-FR',{maximumFractionDigits:2});
+  } else {
+    // natif USD
+    if(CUR==='EUR') return '€'+(raw/EUR_USD).toLocaleString('fr-FR',{maximumFractionDigits:2});
+    return '$'+raw.toLocaleString('fr-FR',{maximumFractionDigits:2});
   }
-  // actifs en USD
-  if(CUR==='EUR') return '€'+(v/EUR_USD).toLocaleString('fr-FR',{maximumFractionDigits:k==='btc'||k==='eth'?0:0});
-  return '$'+v.toLocaleString('fr-FR',{maximumFractionDigits:0});
+}
+
+// Met à jour le badge LIVE/SIM d'un actif
+function setBadge(id, isLive){
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.textContent = isLive ? 'LIVE' : 'SIM';
+  el.className = 'src-badge ' + (isLive ? 'src-live' : 'src-sim');
 }
 
 function tick(){
-  // Ne pas faire fluctuer BTC/ETH si on a des données live (CoinGecko les met à jour)
-  const skipLive = Object.keys(liveCrypto).length > 0;
+  // Simuler uniquement les actifs sans données live
+  const hasStocks = Object.keys(liveStocks).length > 0;
+  const hasCrypto = Object.keys(liveCrypto).length > 0;
   Object.keys(M).forEach(k=>{
-    if(skipLive && (k==='btc'||k==='eth')) return;
-    M[k].v+=(Math.random()-.49)*M[k].vol+M[k].tr*.01;
-    M[k].v=Math.max(M[k].v,M[k].b*.85);
+    const isLiveStock = hasStocks && liveStocks[k];
+    const isLiveCrypto = hasCrypto && (k==='btc'||k==='eth');
+    if(isLiveStock || isLiveCrypto) return; // on ne simule pas ce qu'on a en live
+    M[k].v += (Math.random()-.49)*M[k].vol + M[k].tr*.01;
+    M[k].v = Math.max(M[k].v, M[k].b*.85);
   });
-  ['cac','sp','btc','eth'].forEach(k=>{H[k].push(parseFloat(M[k].v.toFixed(2)));if(H[k].length>HL)H[k].shift();});
+  ['cac','sp','btc','eth'].forEach(k=>{
+    H[k].push(parseFloat(M[k].v.toFixed(2)));
+    if(H[k].length>HL) H[k].shift();
+  });
   updateUI();
 }
 
 function updateUI(){
-  // KPIs
+  // ── Badges LIVE/SIM sur les 3 KPIs principaux
+  setBadge('badge-cac', !!liveStocks.cac);
+  setBadge('badge-sp',  !!liveStocks.sp);
+  setBadge('badge-btc', !!liveCrypto.bitcoin);
+
+  // ── KPIs
   [['v-cac','s-cac','cac'],['v-sp','s-sp','sp'],['v-btc','s-btc','btc']].forEach(([vi,si,k])=>{
-    const p=parseFloat(pct(k));
-    document.getElementById(vi).textContent=fmtAsset(k);
-    const s=document.getElementById(si);
-    s.textContent=ar(p)+Math.abs(p)+"% aujourd'hui";
-    s.className='cs '+cl(p);
+    const p = parseFloat(pct(k));
+    document.getElementById(vi).textContent = fmtAsset(k);
+    const s = document.getElementById(si);
+    s.textContent = ar(p)+Math.abs(p)+"% aujourd'hui";
+    s.className = 'cs '+cl(p);
   });
 
-  // Badges BTC/ETH
-  const bp=parseFloat(pct('btc')),ep=parseFloat(pct('eth'));
+  // ── Mini badges BTC/ETH graphiques
+  const bp=parseFloat(pct('btc')), ep=parseFloat(pct('eth'));
   ['btcbadge','ethbadge'].forEach((id,i)=>{
     const p=i?ep:bp;
     document.getElementById(id).textContent=ar(p)+Math.abs(p)+'%';
     document.getElementById(id).className=cl(p);
   });
 
-  // Ticker
+  // ── Ticker défilant
   const items=[
     {s:'CAC40',k:'cac'},{s:'S&P500',k:'sp'},{s:'BTC',k:'btc'},
     {s:'ETH',k:'eth'},{s:'NVIDIA',k:'nvda'},{s:'LVMH',k:'lvmh'},
-    {s:'TESLA',k:'tsla'},{s:'GOLD',k:'gold'}
+    {s:'TESLA',k:'tsla'},{s:'OR',k:'gold'}
   ];
   document.getElementById('ticker').innerHTML=items.map(({s,k})=>{
     const p=parseFloat(pct(k));
-    return`<div class="ti"><span class="ti-s">${s}</span><span class="ti-p">${fmtAsset(k)}</span><span class="ti-c ${p>=0?'up bup':'dn bdn'}">${p>=0?'▲':'▼'} ${Math.abs(p)}%</span></div>`;
+    const live = liveStocks[k] || (k==='btc'&&liveCrypto.bitcoin) || (k==='eth'&&liveCrypto.ethereum);
+    const dot = live ? '🟢' : '⚫';
+    return`<div class="ti"><span class="ti-s">${dot} ${s}</span><span class="ti-p">${fmtAsset(k)}</span><span class="ti-c ${p>=0?'up bup':'dn bdn'}">${p>=0?'▲':'▼'} ${Math.abs(p)}%</span></div>`;
   }).join('');
 
-  // Portfolio (positions converties)
-  const btcV = CUR==='EUR' ? M.btc.v/EUR_USD : M.btc.v;
-  const ethV = CUR==='EUR' ? M.eth.v/EUR_USD : M.eth.v;
+  // ── Portfolio live
+  // Convertir toutes les valeurs en devise courante
+  const cv = (valUSD) => CUR==='EUR' ? valUSD/EUR_USD : valUSD;
+  const cvEur = (valEUR) => CUR==='USD' ? valEUR*EUR_USD : valEUR;
   const s = sym();
-  const bv=(0.045*btcV).toFixed(0);
-  const ev=(1.2*ethV).toFixed(0);
-  document.getElementById('p-btc').textContent=s+parseInt(bv).toLocaleString('fr-FR');
-  document.getElementById('p-eth').textContent=s+parseInt(ev).toLocaleString('fr-FR');
 
-  const pruBTC = CUR==='EUR' ? 58200/EUR_USD : 58200;
-  const pruETH = CUR==='EUR' ? 2800/EUR_USD : 2800;
-  const bp2=(0.045*btcV-0.045*pruBTC).toFixed(0);
-  const ep2=(1.2*ethV-1.2*pruETH).toFixed(0);
-  document.getElementById('pnl-btc').textContent=(bp2>=0?'▲ +':'▼ ')+s+Math.abs(bp2).toLocaleString('fr-FR');
-  document.getElementById('pnl-btc').className='pp2 '+(bp2>=0?'up':'dn');
-  document.getElementById('pnl-eth').textContent=(ep2>=0?'▲ +':'▼ ')+s+Math.abs(ep2).toLocaleString('fr-FR');
-  document.getElementById('pnl-eth').className='pp2 '+(ep2>=0?'up':'dn');
+  const btcV = cv(M.btc.v);
+  const ethV = cv(M.eth.v);
+  const lvmhV = cvEur(M.lvmh.v);
+  const tslaV = cv(M.tsla.v);
 
-  const lvmhV = CUR==='USD' ? 876*EUR_USD : 876;
-  const tot = (CUR==='EUR')
-    ? (1612 + parseInt(bv) + parseInt(ev) + 950 + 1044)
-    : Math.round((1612+950+1044)/EUR_USD + parseInt(bv) + parseInt(ev));
-  document.getElementById('ptf-total').textContent=s+tot.toLocaleString('fr-FR');
-  const base = CUR==='EUR' ? 12000 : Math.round(12000/EUR_USD*EUR_USD);
-  const pnl=tot-12000;
-  document.getElementById('ptf-pnl').textContent=(pnl>=0?'▲ +':'▼ ')+s+Math.abs(pnl).toLocaleString('fr-FR')+' ('+((pnl/12000)*100).toFixed(2)+'%)';
-  document.getElementById('ptf-pnl').className='pp '+(pnl>=0?'up':'dn');
+  const bv = (0.045 * btcV).toFixed(0);
+  const ev = (1.2   * ethV).toFixed(0);
+
+  document.getElementById('p-btc').textContent = s+parseInt(bv).toLocaleString('fr-FR');
+  document.getElementById('p-eth').textContent = s+parseInt(ev).toLocaleString('fr-FR');
+
+  const pruBTC = cv(58200), pruETH = cv(2800);
+  const bp2 = (0.045*btcV - 0.045*pruBTC).toFixed(0);
+  const ep2 = (1.2  *ethV - 1.2  *pruETH).toFixed(0);
+
+  document.getElementById('pnl-btc').textContent=(+bp2>=0?'▲ +':'▼ ')+s+Math.abs(+bp2).toLocaleString('fr-FR');
+  document.getElementById('pnl-btc').className='pp2 '+(+bp2>=0?'up':'dn');
+  document.getElementById('pnl-eth').textContent=(+ep2>=0?'▲ +':'▼ ')+s+Math.abs(+ep2).toLocaleString('fr-FR');
+  document.getElementById('pnl-eth').className='pp2 '+(+ep2>=0?'up':'dn');
+
+  // Total portefeuille (LVMH x2, BTC, ETH, TSLA x5, MSCI x12)
+  const pruLVMH = cvEur(742), lvmhPos = 2*lvmhV;
+  const tslaPos = 5*tslaV, pruTSLA = cv(220);
+  const msciPos = 12 * cvEur(87); // MSCI World ~87€ la part actuellement
+  const tot = Math.round(lvmhPos + parseInt(bv) + parseInt(ev) + tslaPos + msciPos);
+  const base = Math.round(2*pruLVMH + 0.045*pruBTC + 1.2*pruETH + 5*pruTSLA + 12*cvEur(82.5));
+  const pnl = tot - base;
+
+  document.getElementById('ptf-total').textContent = s+tot.toLocaleString('fr-FR');
+  document.getElementById('ptf-pnl').textContent = (pnl>=0?'▲ +':'▼ ')+s+Math.abs(pnl).toLocaleString('fr-FR')+' ('+((pnl/base)*100).toFixed(2)+'%)';
+  document.getElementById('ptf-pnl').className = 'pp '+(pnl>=0?'up':'dn');
 
   updateWL(); updateC();
 }
 
 // ══ WATCHLIST ══
 const WA=[
-  {n:'Apple',s:'AAPL',k:'sp'},{n:'LVMH',s:'MC.PA',k:'lvmh'},
-  {n:'Tesla',s:'TSLA',k:'tsla'},{n:'NVIDIA',s:'NVDA',k:'nvda'},
-  {n:'Bitcoin',s:'BTC',k:'btc'},{n:'Ethereum',s:'ETH',k:'eth'},
-  {n:'MSCI World',s:'IWDA',k:'sp'},{n:'Or',s:'GOLD',k:'gold'}
+  {n:'Apple',    s:'AAPL',  k:'sp'},
+  {n:'LVMH',     s:'MC.PA', k:'lvmh'},
+  {n:'Tesla',    s:'TSLA',  k:'tsla'},
+  {n:'NVIDIA',   s:'NVDA',  k:'nvda'},
+  {n:'Bitcoin',  s:'BTC',   k:'btc'},
+  {n:'Ethereum', s:'ETH',   k:'eth'},
+  {n:'MSCI World',s:'IWDA', k:'sp'},
+  {n:'Or',       s:'GC=F',  k:'gold'}
 ];
 const SS={'ACHAT':'color:var(--green);background:rgba(0,255,136,.1)','VENTE':'color:var(--red);background:rgba(255,68,102,.1)','NEUTRE':'color:var(--muted);background:rgba(72,79,88,.15)'};
 function sg(p){return p>1?'ACHAT':p<-1?'VENTE':'NEUTRE';}
+function isLiveAsset(k){
+  if(k==='btc') return !!liveCrypto.bitcoin;
+  if(k==='eth') return !!liveCrypto.ethereum;
+  return !!liveStocks[k];
+}
 function updateWL(){
   document.getElementById('wbody').innerHTML=WA.map(a=>{
-    const p=parseFloat(pct(a.k));const s=sg(p);
-    const isLive = (a.k==='btc'||a.k==='eth') && Object.keys(liveCrypto).length>0;
+    const p=parseFloat(pct(a.k));
+    const s=sg(p);
+    const live=isLiveAsset(a.k);
     return`<tr>
-      <td><div class="an">${a.n}</div><div class="as">${a.s} ${isLive?'<span class="src-badge src-live">LIVE</span>':'<span class="src-badge src-sim">SIM</span>'}</div></td>
+      <td><div class="an">${a.n}</div>
+          <div class="as">${a.s} <span class="src-badge ${live?'src-live':'src-sim'}">${live?'LIVE':'SIM'}</span></div></td>
       <td style="font-weight:700">${fmtAsset(a.k)}</td>
       <td class="${p>=0?'up':'dn'}">${p>=0?'▲':'▼'} ${Math.abs(p)}%</td>
-      <td><span style="font-family:var(--mono);font-size:9px;padding:3px 9px;border-radius:2px;letter-spacing:1px;${SS[s]}">${s}</span></td></tr>`;
+      <td><span style="font-family:var(--mono);font-size:9px;padding:3px 9px;border-radius:2px;letter-spacing:1px;${SS[s]}">${s}</span></td>
+    </tr>`;
   }).join('');
 }
 
@@ -676,14 +881,17 @@ function addAlert(){
 async function initApp(){
   startClock();
   initC();
-  // Charger les vraies données crypto immédiatement
-  await fetchLiveCrypto();
-  tick();
+  tick();         // affiche les données simulées immédiatement
   renderNews();
-  // Refresh crypto toutes les 30s
-  setInterval(fetchLiveCrypto, 30000);
-  // Tick simulation toutes les 2s
-  setInterval(tick, 2000);
+
+  // Lancer les données live EN ARRIÈRE-PLAN — ne bloque jamais l'UI
+  fetchLiveStocks().catch(()=>{});
+  fetchLiveCrypto().catch(()=>{});
+
+  // Refresh périodique
+  setInterval(()=>fetchLiveStocks().catch(()=>{}), 60000);
+  setInterval(()=>fetchLiveCrypto().catch(()=>{}), 30000);
+  setInterval(tick, 3000);
 }
 
 
