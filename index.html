@@ -477,92 +477,114 @@ async function fetchWithTimeout(url, ms=8000){
   } catch(e){ clearTimeout(tid); throw e; }
 }
 
-// Symboles Finnhub : indices via /quote, forex via /forex/rates
-const FH_SYMS = {
-  sp:    { sym:'BINANCE:SPYUSDT', type:'crypto'  }, // fallback S&P via ETF
-  nvda:  { sym:'NVDA',            type:'stock'   },
-  lvmh:  { sym:'EURONEXT:MC',     type:'stock'   },
-  tsla:  { sym:'TSLA',            type:'stock'   },
-  // Indices via Yahoo en dernier recours, Finnhub les fournit sous format spécial
-  cac:   { sym:'EURONEXT:CAC',    type:'index'   },
-};
-
-// Finnhub quote : /quote?symbol=X&token=K → { c: currentPrice, pc: previousClose }
+// ── FINNHUB : actions US + EUR/USD
 async function finnhubQuote(symbol){
   const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${FHK}`;
   const res = await fetchWithTimeout(url, 7000);
   if(!res.ok) throw new Error('HTTP '+res.status);
   const d = await res.json();
-  if(!d.c || d.c === 0) throw new Error('Pas de prix pour '+symbol);
+  if(!d.c || d.c === 0) throw new Error('No price: '+symbol);
   return { price: d.c, prev: d.pc || d.c };
 }
-
-// Finnhub forex : EUR/USD
 async function finnhubForex(){
   const url = `https://finnhub.io/api/v1/forex/rates?base=USD&token=${FHK}`;
   const res = await fetchWithTimeout(url, 7000);
   const d = await res.json();
   const eur = d?.quote?.EUR;
-  if(!eur) throw new Error('Pas de taux EUR/USD');
-  EUR_USD = 1 / eur; // base USD → on inverse pour avoir EUR/USD
+  if(!eur) throw new Error('No EUR/USD');
+  EUR_USD = 1 / eur;
 }
 
-// Symboles stocks US + EU à fetcher
+// ── STOOQ : Euronext Paris + indices EU — gratuit, sans clé
+// Symboles : mc.fr = LVMH, ^cac = CAC40, etc.
+async function stooqQuote(symbol){
+  const stooqUrl = `https://stooq.com/q/d/l/?s=${encodeURIComponent(symbol)}&i=d`;
+  const proxy = `https://corsproxy.io/?${encodeURIComponent(stooqUrl)}`;
+  const res = await fetchWithTimeout(proxy, 9000);
+  if(!res.ok) throw new Error('Stooq HTTP '+res.status);
+  const csv = await res.text();
+  const lines = csv.trim().split('\n').filter(l=>l && !l.startsWith('Date'));
+  if(lines.length < 2) throw new Error('Stooq: données insuffisantes pour '+symbol);
+  const last     = lines[lines.length-1].split(',');
+  const prevLine = lines[lines.length-2].split(',');
+  const price = parseFloat(last[4]);
+  const prev  = parseFloat(prevLine[4]);
+  if(isNaN(price)||price===0) throw new Error('Stooq: prix invalide pour '+symbol);
+  return { price, prev: isNaN(prev)?price:prev };
+}
+
+// ── Actifs US → Finnhub
 const FH_STOCKS = [
-  { key:'sp',   sym:'SPY'         },  // S&P 500 via ETF SPY
-  { key:'nvda', sym:'NVDA'        },
-  { key:'tsla', sym:'TSLA'        },
-  { key:'lvmh', sym:'EURONEXT:MC' },  // LVMH sur Euronext
-  { key:'gold', sym:'GLD'         },  // Or via ETF GLD
+  { key:'sp',   sym:'SPY',  mult:10 },  // SPY × 10 ≈ S&P500
+  { key:'nvda', sym:'NVDA', mult:1  },
+  { key:'tsla', sym:'TSLA', mult:1  },
+  { key:'gold', sym:'GLD',  mult:10 },  // GLD × 10 ≈ Or spot
 ];
 
-// Indice CAC40 — Finnhub le fournit sous ce symbole
-const FH_INDICES = [
-  { key:'cac', sym:'^CAC40' },
-  { key:'sp',  sym:'^SPX'   },  // double check S&P via indice direct
+// ── Actifs Euronext + indices EU → Stooq (tous les gros du CAC40)
+const STOOQ_STOCKS = [
+  { key:'cac',  sym:'^cac'     },  // Indice CAC40
+  { key:'lvmh', sym:'mc.fr'    },  // LVMH
+  { key:'tte',  sym:'tte.fr'   },  // TotalEnergies
+  { key:'bnp',  sym:'bnp.fr'   },  // BNP Paribas
+  { key:'air',  sym:'air.fr'   },  // Airbus
+  { key:'san',  sym:'san.fr'   },  // Sanofi
+  { key:'orl',  sym:'or.fr'    },  // L'Oréal
+  { key:'aca',  sym:'aca.fr'   },  // Crédit Agricole
+  { key:'sge',  sym:'gle.fr'   },  // Société Générale
+  { key:'stm',  sym:'stmpa.fr' },  // STMicroelectronics
+  { key:'rno',  sym:'rno.fr'   },  // Renault
+  { key:'ker',  sym:'ker.fr'   },  // Kering
+  { key:'pub',  sym:'pub.fr'   },  // Publicis
+  { key:'viv',  sym:'viv.fr'   },  // Vivendi
+  { key:'saf',  sym:'saf.fr'   },  // Safran
+  { key:'engi', sym:'engi.fr'  },  // Engie
+  { key:'dg',   sym:'dg.fr'    },  // Vinci
+  { key:'ml',   sym:'ml.fr'    },  // Michelin
+  { key:'hav',  sym:'hav.fr'   },  // Havas/Bolloré
+  { key:'RI',   sym:'ri.fr'    },  // Pernod Ricard
 ];
 
 async function fetchLiveStocks(){
   let count = 0;
 
-  // 1. Taux EUR/USD
+  // 1. EUR/USD via Finnhub
   try { await finnhubForex(); } catch(e){ console.warn('Forex:', e.message); }
 
-  // 2. Stocks + ETF en parallèle
-  const stockResults = await Promise.allSettled(
-    FH_STOCKS.map(({key, sym}) =>
-      finnhubQuote(sym).then(v => ({ key, ...v }))
+  // 2. Actions US via Finnhub (parallèle)
+  const usRes = await Promise.allSettled(
+    FH_STOCKS.map(({key,sym,mult})=>
+      finnhubQuote(sym).then(v=>({key, price:v.price*mult, prev:v.prev*mult}))
     )
   );
-  stockResults.forEach(r => {
-    if(r.status === 'fulfilled'){
-      const { key, price, prev } = r.value;
-      // SPY ≈ S&P/10 (SPY suit le S&P à 1/10e)
-      const realPrice = key==='sp' ? price*10 : price;
-      const realPrev  = key==='sp' ? prev*10  : prev;
-      liveStocks[key] = { price: realPrice, prev: realPrev };
-      if(M[key]){ M[key].v = realPrice; M[key].b = realPrev; }
+  usRes.forEach(r=>{
+    if(r.status==='fulfilled'){
+      const {key,price,prev}=r.value;
+      liveStocks[key]={price,prev};
+      if(M[key]){M[key].v=price; M[key].b=prev;}
       count++;
     }
   });
 
-  // 3. Indices CAC40 + S&P direct
-  const idxResults = await Promise.allSettled(
-    FH_INDICES.map(({key, sym}) =>
-      finnhubQuote(sym).then(v => ({ key, ...v }))
+  // 3. Euronext via Stooq (parallèle, tolérant)
+  const euRes = await Promise.allSettled(
+    STOOQ_STOCKS.map(({key,sym})=>
+      stooqQuote(sym).then(v=>({key,...v}))
     )
   );
-  idxResults.forEach(r => {
-    if(r.status === 'fulfilled'){
-      const { key, price, prev } = r.value;
-      liveStocks[key] = { price, prev };
-      if(M[key]){ M[key].v = price; M[key].b = prev; }
+  euRes.forEach(r=>{
+    if(r.status==='fulfilled'){
+      const {key,price,prev}=r.value;
+      liveStocks[key]={price,prev};
+      if(M[key]){M[key].v=price; M[key].b=prev;}
       count++;
+    } else {
+      console.warn('Stooq:', r.reason?.message);
     }
   });
 
-  updateStatusBar(count > 0 ? 'Finnhub' : 'simulation');
-  console.log(`✅ Finnhub: ${count} actifs chargés`);
+  updateStatusBar(count>0 ? 'Finnhub + Stooq' : 'simulation');
+  console.log(`✅ Live: ${count} actifs`);
 }
 
 // ══ DONNÉES LIVE CRYPTO — 4 sources en cascade, toujours une qui marche ══
@@ -650,14 +672,35 @@ function updateStatusBar(srcName){
 
 // ══ MARCHÉ — valeurs par défaut (remplacées par données live) ══
 const M={
-  cac: {v:7842, b:7842, vol:8,  tr:.3,  eur:true},   // coté en EUR
-  sp:  {v:5700, b:5700, vol:5,  tr:.2,  eur:false},   // coté en USD
-  btc: {v:82000,b:82000,vol:80, tr:0,   eur:false},   // coté en USD
-  eth: {v:2000, b:2000, vol:15, tr:0,   eur:false},   // coté en USD
-  nvda:{v:110,  b:110,  vol:2,  tr:.5,  eur:false},
-  lvmh:{v:580,  b:580,  vol:4,  tr:.2,  eur:true},    // coté en EUR (MC.PA)
-  tsla:{v:260,  b:260,  vol:5,  tr:-.3, eur:false},
-  gold:{v:3100, b:3100, vol:3,  tr:.1,  eur:false},
+  // Indices
+  cac:  {v:7900,  b:7900,  vol:8,  tr:.2,  eur:true },
+  sp:   {v:5700,  b:5700,  vol:5,  tr:.2,  eur:false},
+  // Crypto
+  btc:  {v:82000, b:82000, vol:80, tr:0,   eur:false},
+  eth:  {v:2000,  b:2000,  vol:15, tr:0,   eur:false},
+  // US
+  nvda: {v:110,   b:110,   vol:2,  tr:.5,  eur:false},
+  tsla: {v:260,   b:260,   vol:5,  tr:-.3, eur:false},
+  gold: {v:3100,  b:3100,  vol:3,  tr:.1,  eur:false},
+  // CAC40 — Euronext Paris
+  lvmh: {v:580,   b:580,   vol:4,  tr:.2,  eur:true },
+  tte:  {v:62,    b:62,    vol:1,  tr:.1,  eur:true },  // TotalEnergies
+  bnp:  {v:75,    b:75,    vol:1,  tr:.1,  eur:true },  // BNP Paribas
+  air:  {v:165,   b:165,   vol:2,  tr:.2,  eur:true },  // Airbus
+  san:  {v:95,    b:95,    vol:1,  tr:.1,  eur:true },  // Sanofi
+  orl:  {v:380,   b:380,   vol:3,  tr:.1,  eur:true },  // L'Oréal
+  aca:  {v:14,    b:14,    vol:.3, tr:.1,  eur:true },  // Crédit Agricole
+  sge:  {v:28,    b:28,    vol:.5, tr:.1,  eur:true },  // Société Générale
+  stm:  {v:22,    b:22,    vol:.5, tr:.1,  eur:true },  // STMicro
+  rno:  {v:42,    b:42,    vol:.8, tr:.1,  eur:true },  // Renault
+  ker:  {v:260,   b:260,   vol:3,  tr:.1,  eur:true },  // Kering
+  pub:  {v:92,    b:92,    vol:1,  tr:.1,  eur:true },  // Publicis
+  viv:  {v:11,    b:11,    vol:.2, tr:.1,  eur:true },  // Vivendi
+  saf:  {v:215,   b:215,   vol:2,  tr:.1,  eur:true },  // Safran
+  engi: {v:16,    b:16,    vol:.3, tr:.1,  eur:true },  // Engie
+  dg:   {v:118,   b:118,   vol:1,  tr:.1,  eur:true },  // Vinci
+  ml:   {v:30,    b:30,    vol:.5, tr:.1,  eur:true },  // Michelin
+  RI:   {v:130,   b:130,   vol:1,  tr:.1,  eur:true },  // Pernod Ricard
 };
 const H={cac:[],sp:[],btc:[],eth:[]};const HL=60;
 
@@ -790,14 +833,38 @@ function updateUI(){
 
 // ══ WATCHLIST ══
 const WA=[
-  {n:'Apple',    s:'AAPL',  k:'sp'},
-  {n:'LVMH',     s:'MC.PA', k:'lvmh'},
-  {n:'Tesla',    s:'TSLA',  k:'tsla'},
-  {n:'NVIDIA',   s:'NVDA',  k:'nvda'},
-  {n:'Bitcoin',  s:'BTC',   k:'btc'},
-  {n:'Ethereum', s:'ETH',   k:'eth'},
-  {n:'MSCI World',s:'IWDA', k:'sp'},
-  {n:'Or',       s:'GC=F',  k:'gold'}
+  // Indices
+  {n:'CAC 40',        s:'^CAC',      k:'cac',  grp:'Indice'},
+  {n:'S&P 500',       s:'^SPX',      k:'sp',   grp:'Indice'},
+  // Crypto
+  {n:'Bitcoin',       s:'BTC',       k:'btc',  grp:'Crypto'},
+  {n:'Ethereum',      s:'ETH',       k:'eth',  grp:'Crypto'},
+  // US
+  {n:'NVIDIA',        s:'NVDA',      k:'nvda', grp:'US'},
+  {n:'Tesla',         s:'TSLA',      k:'tsla', grp:'US'},
+  {n:'Or',            s:'GLD',       k:'gold', grp:'Matière'},
+  // CAC40 — Euronext Paris
+  {n:'LVMH',          s:'MC.PA',     k:'lvmh', grp:'CAC40'},
+  {n:'TotalEnergies', s:'TTE.PA',    k:'tte',  grp:'CAC40'},
+  {n:'BNP Paribas',   s:'BNP.PA',    k:'bnp',  grp:'CAC40'},
+  {n:'Airbus',        s:'AIR.PA',    k:'air',  grp:'CAC40'},
+  {n:'Sanofi',        s:'SAN.PA',    k:'san',  grp:'CAC40'},
+  {n:'L\'Oréal',      s:'OR.PA',     k:'orl',  grp:'CAC40'},
+  {n:'Crédit Agricole',s:'ACA.PA',   k:'aca',  grp:'CAC40'},
+  {n:'Soc. Générale', s:'GLE.PA',    k:'sge',  grp:'CAC40'},
+  {n:'STMicro',       s:'STMPA.PA',  k:'stm',  grp:'CAC40'},
+  {n:'Renault',       s:'RNO.PA',    k:'rno',  grp:'CAC40'},
+  {n:'Kering',        s:'KER.PA',    k:'ker',  grp:'CAC40'},
+  {n:'Publicis',      s:'PUB.PA',    k:'pub',  grp:'CAC40'},
+  {n:'Safran',        s:'SAF.PA',    k:'saf',  grp:'CAC40'},
+  {n:'Engie',         s:'ENGI.PA',   k:'engi', grp:'CAC40'},
+  {n:'Vinci',         s:'DG.PA',     k:'dg',   grp:'CAC40'},
+  {n:'Michelin',      s:'ML.PA',     k:'ml',   grp:'CAC40'},
+  {n:'Pernod Ricard', s:'RI.PA',     k:'RI',   grp:'CAC40'},
+  {n:'Vivendi',       s:'VIV.PA',    k:'viv',  grp:'CAC40'},
+  {n:'Kering',        s:'KER.PA',    k:'ker',  grp:'CAC40'},
+  // ETF
+  {n:'MSCI World',    s:'IWDA',      k:'sp',   grp:'ETF'},
 ];
 const SS={'ACHAT':'color:var(--green);background:rgba(0,255,136,.1)','VENTE':'color:var(--red);background:rgba(255,68,102,.1)','NEUTRE':'color:var(--muted);background:rgba(72,79,88,.15)'};
 function sg(p){return p>1?'ACHAT':p<-1?'VENTE':'NEUTRE';}
@@ -811,9 +878,11 @@ function updateWL(){
     const p=parseFloat(pct(a.k));
     const s=sg(p);
     const live=isLiveAsset(a.k);
+    const grpCol = a.grp==='CAC40'?'var(--cyan)':a.grp==='Crypto'?'var(--green)':a.grp==='US'?'var(--gold)':'var(--muted)';
     return`<tr>
       <td><div class="an">${a.n}</div>
-          <div class="as">${a.s} <span class="src-badge ${live?'src-live':'src-sim'}">${live?'LIVE':'SIM'}</span></div></td>
+          <div class="as">${a.s} <span class="src-badge ${live?'src-live':'src-sim'}">${live?'LIVE':'SIM'}</span>
+          <span style="font-size:8px;color:${grpCol};margin-left:3px">${a.grp}</span></div></td>
       <td style="font-weight:700">${fmtAsset(a.k)}</td>
       <td class="${p>=0?'up':'dn'}">${p>=0?'▲':'▼'} ${Math.abs(p)}%</td>
       <td><span style="font-family:var(--mono);font-size:9px;padding:3px 9px;border-radius:2px;letter-spacing:1px;${SS[s]}">${s}</span></td>
