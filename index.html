@@ -115,8 +115,12 @@ canvas{max-height:190px;}
 .an{font-family:var(–disp);font-weight:600;font-size:13px;color:var(–text);}
 .as{font-family:var(–mono);font-size:10px;color:var(–muted);}
 
-/* NEWS */
-.ni{padding:14px;border-bottom:1px solid var(–border);display:flex;gap:10px;cursor:pointer;transition:background .15s;}
+/* NEWS FILTERS */
+.nfbtn{font-family:var(–mono);font-size:9px;padding:4px 10px;background:transparent;border:1px solid var(–border);border-radius:3px;color:var(–muted);cursor:pointer;transition:all .15s;letter-spacing:.5px;}
+.nfbtn:hover{border-color:var(–cyan);color:var(–cyan);}
+.nfbtn.on{background:rgba(0,229,255,.1);border-color:var(–cyan);color:var(–cyan);}
+.nlink{color:var(–cyan);text-decoration:none;font-size:10px;font-family:var(–mono);}
+.nlink:hover{text-decoration:underline;}
 .ni:hover{background:var(–s2);}
 .nd{width:6px;height:6px;border-radius:50%;flex-shrink:0;margin-top:5px;}
 .nt{font-size:12px;font-weight:600;line-height:1.4;color:var(–text);margin-bottom:4px;}
@@ -325,10 +329,25 @@ canvas{max-height:190px;}
 
 <div id="s-news" class="sec">
   <div class="g2" style="margin-bottom:14px">
-    <div class="card"><div class="cl">Sentiment global</div><div class="cv" style="font-size:20px;color:var(--green)">😊 Haussier</div><div class="cs">Score 68/100</div></div>
-    <div class="card"><div class="cl">Fear &amp; Greed</div><div class="cv" style="font-size:20px;color:var(--gold)">🔥 Avidité</div><div class="cs">Indice : 72</div></div>
+    <div class="card"><div class="cl">Sentiment global</div><div class="cv" id="sent-val" style="font-size:20px;color:var(--green)">😊 Haussier</div><div class="cs" id="sent-sub">Score 68/100</div></div>
+    <div class="card"><div class="cl">Fear &amp; Greed</div><div class="cv" id="fg-val" style="font-size:20px;color:var(--gold)">🔥 Avidité</div><div class="cs" id="fg-sub">Indice : 72</div></div>
   </div>
-  <div class="card" style="padding:0" id="newsfeed"></div>
+  <!-- Filtres + statut -->
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+    <div style="display:flex;gap:4px;flex-wrap:wrap;flex:1">
+      <button class="nfbtn on" onclick="filterNews('all',this)">Tout</button>
+      <button class="nfbtn" onclick="filterNews('MACRO',this)">Macro</button>
+      <button class="nfbtn" onclick="filterNews('CRYPTO',this)">Crypto</button>
+      <button class="nfbtn" onclick="filterNews('CAC40',this)">CAC40</button>
+      <button class="nfbtn" onclick="filterNews('TECH',this)">Tech</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:9px;color:var(--muted)">
+      <div id="news-dot" style="width:6px;height:6px;border-radius:50%;background:var(--muted)"></div>
+      <span id="news-status">Chargement…</span>
+      <button onclick="fetchLiveNews()" style="background:transparent;border:1px solid var(--border);border-radius:3px;color:var(--muted);font-family:var(--mono);font-size:9px;padding:2px 7px;cursor:pointer">↻</button>
+    </div>
+  </div>
+  <div class="card" style="padding:0" id="newsfeed"><div style="padding:24px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--muted)"><div class="spin" style="display:inline-block;margin-right:8px"></div>Chargement des actualités…</div></div>
 </div>
 
 <!-- IA -->
@@ -812,22 +831,167 @@ function updateC(){
 }
 function switchChart(btn,k){document.querySelectorAll('.cbtn').forEach(b=>b.classList.remove('on'));btn.classList.add('on');aC=k;updateC();}
 
-// ══ NEWS ══
-const ND=[
-  {t:"Fed maintient ses taux — Powell évoque une baisse possible en juin",src:"Bloomberg",age:"8 min",tag:"MACRO",col:"var(--gold)"},
-  {t:"Bitcoin franchit 68 000 $ — ETF spot enregistrent des entrées record",src:"CoinDesk",age:"22 min",tag:"CRYPTO",col:"var(--green)"},
-  {t:"NVIDIA dépasse les attentes — revenus IA en hausse de 400% au T1",src:"Reuters",age:"35 min",tag:"TECH",col:"var(--cyan)"},
-  {t:"LVMH : Arnault augmente sa participation — signal fort pour le luxe",src:"Les Échos",age:"1h",tag:"CAC40",col:"var(--cyan)"},
-  {t:"Ethereum : mise à jour Pectra confirmée — DeFi en hausse de +8%",src:"Decrypt",age:"1h 20min",tag:"CRYPTO",col:"var(--green)"},
-  {t:"Inflation zone euro : 2.4% en mars — BCE envisage assouplissement",src:"FT",age:"2h",tag:"MACRO",col:"var(--gold)"},
-  {t:"Tesla : retard Cybertruck Gen2 annoncé — titre en recul",src:"WSJ",age:"2h 30min",tag:"AUTO",col:"var(--red)"},
-  {t:"Or au plus haut à 3 100 $ — investisseurs en quête de valeurs refuge",src:"Reuters",age:"3h",tag:"MARCHÉ",col:"var(--gold)"},
-  {t:"CAC 40 : le secteur bancaire tire les indices après résultats BNP",src:"Le Figaro",age:"3h 30min",tag:"CAC40",col:"var(--cyan)"},
-  {t:"BlackRock ajoute 1.2 Md$ sur ses ETF Bitcoin",src:"Bloomberg",age:"4h",tag:"CRYPTO",col:"var(--green)"},
+// ══ NEWS LIVE — RSS via proxy CORS ══════════════════════════
+let allNewsItems = [];   // tous les articles chargés
+let newsFilter   = 'all';
+
+// Flux RSS financiers classifiés par tag
+const RSS_FEEDS = [
+  { url:'https://feeds.finance.yahoo.com/rss/2.0/headline?s=^FCHI,^GSPC&region=FR&lang=fr-FR', src:'Yahoo Finance', tag:'MARCHÉ' },
+  { url:'https://www.investing.com/rss/news.rss',                                               src:'Investing.com', tag:'MARCHÉ' },
+  { url:'https://feeds.feedburner.com/reuters/businessNews',                                    src:'Reuters',       tag:'MACRO'  },
+  { url:'https://www.coindesk.com/arc/outboundfeeds/rss/',                                      src:'CoinDesk',      tag:'CRYPTO' },
+  { url:'https://cointelegraph.com/rss',                                                        src:'CoinTelegraph',  tag:'CRYPTO' },
+  { url:'https://www.lefigaro.fr/rss/figaro_bourse.xml',                                       src:'Le Figaro',     tag:'CAC40'  },
+  { url:'https://cnbc.com/id/10001147/device/rss/rss.html',                                    src:'CNBC',          tag:'TECH'   },
 ];
-function renderNews(){
-  document.getElementById('newsfeed').innerHTML=ND.map(n=>`<div class="ni"><div class="nd" style="background:${n.col}"></div><div><div class="nt">${n.t}</div><div class="nm"><span>${n.src}</span><span>Il y a ${n.age}</span><span class="ntag" style="color:${n.col};background:${n.col}22">${n.tag}</span></div></div></div>`).join('');
+
+// Couleurs par tag
+const TAG_COLORS = {
+  'MARCHÉ':'var(--cyan)', 'MACRO':'var(--gold)', 'CRYPTO':'var(--green)',
+  'CAC40':'var(--cyan)',  'TECH':'var(--cyan)',   'AUTO':'var(--red)',
+};
+
+// Détecte le tag depuis titre + source
+function guessTag(title, src, defaultTag){
+  const t = title.toLowerCase();
+  if(/bitcoin|ethereum|crypto|btc|eth|binance|defi|nft/.test(t)) return 'CRYPTO';
+  if(/cac|lvmh|total|bnp|airbus|sanofi|euronext/.test(t))        return 'CAC40';
+  if(/fed|bce|inflation|taux|macro|récession|pib/.test(t))        return 'MACRO';
+  if(/nvidia|apple|tesla|microsoft|google|tech|ia |ai /.test(t))  return 'TECH';
+  return defaultTag;
 }
+
+// Formate la date relative
+function relTime(dateStr){
+  try {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const m = Math.floor(diff/60000);
+    if(m < 1)  return 'À l\'instant';
+    if(m < 60) return `Il y a ${m} min`;
+    const h = Math.floor(m/60);
+    if(h < 24) return `Il y a ${h}h`;
+    return `Il y a ${Math.floor(h/24)}j`;
+  } catch(e){ return ''; }
+}
+
+// Parse un flux RSS (texte XML) → tableau d'articles
+function parseRSS(xml, src, defaultTag){
+  const items = [];
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xml, 'text/xml');
+    const entries = [...doc.querySelectorAll('item, entry')].slice(0, 6);
+    entries.forEach(el => {
+      const title = el.querySelector('title')?.textContent?.trim() || '';
+      const link  = el.querySelector('link')?.textContent?.trim() ||
+                    el.querySelector('link')?.getAttribute('href') || '#';
+      const date  = el.querySelector('pubDate,published,updated')?.textContent || '';
+      const tag   = guessTag(title, src, defaultTag);
+      if(title) items.push({ title, link, date, src, tag, col: TAG_COLORS[tag]||'var(--cyan)' });
+    });
+  } catch(e){}
+  return items;
+}
+
+// Fetch un flux RSS via proxy corsproxy.io
+async function fetchFeed(feed){
+  const proxy = `https://corsproxy.io/?${encodeURIComponent(feed.url)}`;
+  const res = await fetchWithTimeout(proxy, 8000);
+  if(!res.ok) throw new Error(res.status);
+  const xml = await res.text();
+  return parseRSS(xml, feed.src, feed.tag);
+}
+
+async function fetchLiveNews(){
+  document.getElementById('news-dot').style.background = 'var(--gold)';
+  document.getElementById('news-status').textContent   = 'Chargement…';
+
+  const results = await Promise.allSettled(RSS_FEEDS.map(f => fetchFeed(f)));
+  let items = [];
+  results.forEach(r => { if(r.status==='fulfilled') items = items.concat(r.value); });
+
+  if(items.length > 0){
+    // Tri par date (plus récent en premier), dédoublonnage par titre
+    const seen = new Set();
+    allNewsItems = items
+      .filter(i => { const k=i.title.slice(0,40); if(seen.has(k)) return false; seen.add(k); return true; })
+      .sort((a,b) => new Date(b.date) - new Date(a.date))
+      .slice(0, 30);
+
+    document.getElementById('news-dot').style.background   = 'var(--green)';
+    document.getElementById('news-status').textContent     = `${allNewsItems.length} articles · ${new Date().toLocaleTimeString('fr-FR')}`;
+    updateSentiment();
+  } else {
+    // Fallback statique si tous les RSS échouent
+    allNewsItems = FALLBACK_NEWS;
+    document.getElementById('news-dot').style.background   = 'var(--muted)';
+    document.getElementById('news-status').textContent     = 'Mode hors-ligne';
+  }
+  renderNews();
+}
+
+// Met à jour le sentiment global selon les titres
+function updateSentiment(){
+  const pos = ['hausse','monte','rebond','record','dépasse','fort','positif','achat','growth','rally','surge','gains'];
+  const neg = ['baisse','recul','chute','perte','négatif','vente','risque','fear','crash','falls','drops','selloff'];
+  let score = 50;
+  allNewsItems.slice(0,10).forEach(n => {
+    const t = n.title.toLowerCase();
+    pos.forEach(w=>{ if(t.includes(w)) score+=3; });
+    neg.forEach(w=>{ if(t.includes(w)) score-=3; });
+  });
+  score = Math.max(10, Math.min(90, score));
+  const sentEl = document.getElementById('sent-val');
+  const subEl  = document.getElementById('sent-sub');
+  if(sentEl) sentEl.textContent = score>=60?'😊 Haussier':score<=40?'😟 Baissier':'😐 Neutre';
+  if(sentEl) sentEl.style.color = score>=60?'var(--green)':score<=40?'var(--red)':'var(--gold)';
+  if(subEl)  subEl.textContent  = `Score ${score}/100`;
+}
+
+function filterNews(tag, btn){
+  newsFilter = tag;
+  document.querySelectorAll('.nfbtn').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+  renderNews();
+}
+
+function renderNews(){
+  const items = newsFilter==='all'
+    ? allNewsItems
+    : allNewsItems.filter(n=>n.tag===newsFilter);
+
+  if(!items.length){
+    document.getElementById('newsfeed').innerHTML =
+      `<div style="padding:24px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--muted)">Aucun article pour ce filtre</div>`;
+    return;
+  }
+  document.getElementById('newsfeed').innerHTML = items.map(n=>`
+    <div class="ni" onclick="window.open('${n.link}','_blank')">
+      <div class="nd" style="background:${n.col}"></div>
+      <div style="flex:1">
+        <div class="nt">${n.title}</div>
+        <div class="nm">
+          <span>${n.src}</span>
+          <span>${relTime(n.date)}</span>
+          <span class="ntag" style="color:${n.col};background:${n.col}22">${n.tag}</span>
+        </div>
+      </div>
+      <div style="font-size:14px;color:var(--muted);padding-left:4px">›</div>
+    </div>`).join('');
+}
+
+// News de secours si tous les RSS échouent
+const FALLBACK_NEWS = [
+  {title:"Fed maintient ses taux — baisse envisagée en juin",         src:"Bloomberg",    date:new Date().toISOString(), tag:'MACRO',  col:'var(--gold)'},
+  {title:"Bitcoin consolide autour de 82 000 $ après les records",   src:"CoinDesk",     date:new Date().toISOString(), tag:'CRYPTO', col:'var(--green)'},
+  {title:"NVIDIA : résultats IA dépassent les attentes au T1",       src:"Reuters",      date:new Date().toISOString(), tag:'TECH',   col:'var(--cyan)'},
+  {title:"CAC 40 en légère hausse porté par le luxe et la banque",   src:"Le Figaro",    date:new Date().toISOString(), tag:'CAC40',  col:'var(--cyan)'},
+  {title:"Ethereum : mise à jour Pectra déployée avec succès",        src:"CoinTelegraph",date:new Date().toISOString(), tag:'CRYPTO', col:'var(--green)'},
+  {title:"Zone euro : inflation à 2.4% — BCE envisage un assouplissement", src:"FT",    date:new Date().toISOString(), tag:'MACRO',  col:'var(--gold)'},
+  {title:"Tesla en recul après retard annoncé sur le Cybertruck Gen2",src:"WSJ",         date:new Date().toISOString(), tag:'AUTO',   col:'var(--red)'},
+  {title:"Or au plus haut à 3 100 $ — valeurs refuge recherchées",   src:"Reuters",      date:new Date().toISOString(), tag:'MARCHÉ', col:'var(--gold)'},
+];
 
 // ══ GEMINI AI ══
 function addMsg(text,role){
@@ -881,16 +1045,17 @@ function addAlert(){
 async function initApp(){
   startClock();
   initC();
-  tick();         // affiche les données simulées immédiatement
-  renderNews();
+  tick();
+  renderNews(); // affiche le loader immédiatement
 
-  // Lancer les données live EN ARRIÈRE-PLAN — ne bloque jamais l'UI
+  // Tout en arrière-plan — ne bloque jamais l'UI
   fetchLiveStocks().catch(()=>{});
   fetchLiveCrypto().catch(()=>{});
+  fetchLiveNews().catch(()=>{ allNewsItems=FALLBACK_NEWS; renderNews(); });
 
-  // Refresh périodique
   setInterval(()=>fetchLiveStocks().catch(()=>{}), 60000);
   setInterval(()=>fetchLiveCrypto().catch(()=>{}), 30000);
+  setInterval(()=>fetchLiveNews().catch(()=>{}),  600000); // news toutes les 10 min
   setInterval(tick, 3000);
 }
 
