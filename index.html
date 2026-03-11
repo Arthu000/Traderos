@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
@@ -184,7 +183,6 @@ header{position:sticky;top:0;z-index:200;display:flex;align-items:center;justify
 <body>
 
 <!-- SETUP -->
-
 <div id="setup">
   <div class="sbox">
     <div class="slogo">🔐 TRADEOS</div>
@@ -206,11 +204,9 @@ header{position:sticky;top:0;z-index:200;display:flex;align-items:center;justify
 </div>
 
 <!-- GEAR -->
-
 <div id="gear" onclick="showSetup()">⚙️</div>
 
 <!-- APP -->
-
 <div id="app" style="display:none">
 <header>
   <div class="logo"><div class="pulse"></div>TRADE<span style="color:var(--text)">OS</span></div>
@@ -241,7 +237,6 @@ header{position:sticky;top:0;z-index:200;display:flex;align-items:center;justify
 <div class="main">
 
 <!-- MARCHÉS -->
-
 <div id="s-market" class="sec on">
   <div class="sbar">
     <div id="sb-dot"></div>
@@ -301,7 +296,6 @@ header{position:sticky;top:0;z-index:200;display:flex;align-items:center;justify
 </div>
 
 <!-- PORTFOLIO -->
-
 <div id="s-portfolio" class="sec">
   <div class="card" style="padding:0;margin-bottom:11px">
     <div class="pt">
@@ -335,7 +329,6 @@ header{position:sticky;top:0;z-index:200;display:flex;align-items:center;justify
 </div>
 
 <!-- WATCHLIST -->
-
 <div id="s-watchlist" class="sec">
   <div class="filters" id="wl-filters"></div>
   <div class="card" style="padding:0">
@@ -349,7 +342,6 @@ header{position:sticky;top:0;z-index:200;display:flex;align-items:center;justify
 </div>
 
 <!-- NEWS -->
-
 <div id="s-news" class="sec">
   <div class="g2" style="margin-bottom:11px">
     <div class="card"><div class="cl">Sentiment</div><div class="cv" id="sent-val" style="font-size:18px">😊 Haussier</div><div class="cs" id="sent-sub">Score 65/100</div></div>
@@ -375,7 +367,6 @@ header{position:sticky;top:0;z-index:200;display:flex;align-items:center;justify
 </div>
 
 <!-- IA -->
-
 <div id="s-ai" class="sec">
   <div class="aip">
     <div class="aih">
@@ -404,7 +395,6 @@ header{position:sticky;top:0;z-index:200;display:flex;align-items:center;justify
 </div>
 
 <!-- ALERTES -->
-
 <div id="s-alerts" class="sec">
   <div class="card" style="margin-bottom:11px">
     <div style="font-family:var(--mono);font-size:9px;letter-spacing:2px;color:var(--muted);margin-bottom:12px">CRÉER UNE ALERTE DE PRIX</div>
@@ -570,30 +560,42 @@ async function fhForex(){
   EURUSD=1/d.quote.EUR;
 }
 
-// ── YAHOO FINANCE v8 — Euronext .PA (~2-5min différé)
+// ── PROXIES CORS — 3 en cascade
+const PROXIES=[
+  u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,
+  u=>`https://thingproxy.freeboard.io/fetch/${encodeURIComponent(u)}`,
+];
+async function fetchProxy(url,ms=9000){
+  for(const proxy of PROXIES){
+    try{
+      const r=await fetchT(proxy(url),ms);
+      if(r.ok){const t=await r.text();if(t&&t.length>10)return t;}
+    }catch{}
+  }
+  throw new Error('All proxies failed');
+}
+
+// ── YAHOO FINANCE v8 — Euronext .PA — essaie 3 proxies
 async function yahooQuote(symbol){
   const yurl=`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d`;
-  const r=await fetchT(`https://corsproxy.io/?${encodeURIComponent(yurl)}`,9000);
-  if(!r.ok)throw new Error('YF '+r.status);
-  const d=await r.json();
+  const text=await fetchProxy(yurl,9000);
+  const d=JSON.parse(text);
   const meta=d?.chart?.result?.[0]?.meta;
   if(!meta)throw new Error('YF no meta '+symbol);
   const price=meta.regularMarketPrice||meta.previousClose;
   if(!price||price===0)throw new Error('YF no price '+symbol);
   const prev=meta.chartPreviousClose||meta.previousClose||price;
-  // regularMarketTime = horodatage RÉEL de la dernière cotation Yahoo
   const ts=meta.regularMarketTime?new Date(meta.regularMarketTime*1000):new Date();
   return{price,prev,ts,src:'Yahoo'};
 }
 
-// ── STOOQ — fallback EU (DONNÉES J-1 UNIQUEMENT — à éviter pour trader)
+// ── STOOQ — clôture J-1 figée (PAS de simulation — données réelles)
 const STOOQ_MAP={'MC.PA':'mc.fr','TTE.PA':'tte.fr','BNP.PA':'bnp.fr','AIR.PA':'air.fr','SAN.PA':'san.fr','OR.PA':'or.fr','ACA.PA':'aca.fr','GLE.PA':'gle.fr','STMPA.PA':'stmpa.fr','RNO.PA':'rno.fr','KER.PA':'ker.fr','PUB.PA':'pub.fr','SAF.PA':'saf.fr','ENGI.PA':'engi.fr','DG.PA':'dg.fr','ML.PA':'ml.fr','RI.PA':'ri.fr','VIV.PA':'viv.fr','^CAC':'^cac'};
 async function stooqQuote(symbol){
   const url=`https://stooq.com/q/d/l/?s=${encodeURIComponent(symbol)}&i=d`;
-  const r=await fetchT(`https://corsproxy.io/?${encodeURIComponent(url)}`,8000);
-  if(!r.ok)throw new Error('Stooq '+r.status);
-  const csv=await r.text();
-  const lines=csv.trim().split('\n').filter(l=>l&&!l.startsWith('Date'));
+  const text=await fetchProxy(url,8000);
+  const lines=text.trim().split('\n').filter(l=>l&&!l.startsWith('Date'));
   if(lines.length<2)throw new Error('Stooq no data');
   const last=lines[lines.length-1].split(',');
   const prevLine=lines[lines.length-2].split(',');
@@ -603,8 +605,13 @@ async function stooqQuote(symbol){
   return{price,prev:isNaN(prevP)?price:prevP,ts,src:'STOOQ-J1'};
 }
 async function euQuote(yahooSym){
-  try{return await yahooQuote(yahooSym);}
-  catch(e){const st=STOOQ_MAP[yahooSym];if(st)return await stooqQuote(st);throw e;}
+  // 1. Yahoo v8 via multi-proxy (données quasi temps réel)
+  try{return await yahooQuote(yahooSym);}catch{}
+  // 2. Stooq clôture J-1 (données réelles FIGÉES — PAS de simulation)
+  const st=STOOQ_MAP[yahooSym];
+  if(st){try{return await stooqQuote(st);}catch{}}
+  // 3. Échec total → null (l'actif restera figé, pas de sim)
+  return null;
 }
 
 // ── FETCH US (Finnhub)
@@ -616,11 +623,18 @@ async function fetchUS(){
   res.forEach(r=>{if(r.status==='fulfilled'){const{k,price,prev,ts}=r.value;A[k].v=price;A[k].b=prev;A[k].ts=ts;A[k].src='Finnhub';liveCount++;}});
 }
 
-// ── FETCH EU (Yahoo Finance v8 + Stooq fallback)
+// ── FETCH EU (Yahoo v8 multi-proxy + Stooq J-1 figé — jamais de simulation)
 const EU_KEYS=Object.keys(A).filter(k=>A[k].grp==='EU');
 async function fetchEU(){
-  const res=await Promise.allSettled(EU_KEYS.map(k=>euQuote(A[k].s).then(v=>({k,...v}))));
-  res.forEach(r=>{if(r.status==='fulfilled'){const{k,price,prev,ts,src}=r.value;A[k].v=price;A[k].b=prev;A[k].ts=ts;A[k].src=src;liveCount++;}});
+  const res=await Promise.allSettled(EU_KEYS.map(k=>euQuote(A[k].s).then(v=>({k,result:v}))));
+  res.forEach(r=>{
+    if(r.status==='fulfilled'&&r.value.result){
+      const{k,result:{price,prev,ts,src}}=r.value;
+      A[k].v=price;A[k].b=prev;A[k].ts=ts;A[k].src=src;
+      liveCount++;
+    }
+    // Si null → on ne touche pas l'actif (reste figé — src reste 'SIM', vol ignoré dans tick)
+  });
 }
 
 // ── FETCH CRYPTO — Binance WebSocket (tick par tick) + REST fallback
@@ -668,6 +682,7 @@ async function fetchCrypto(){
 async function refreshAll(){
   liveCount=0;updateMktStatus();
   await Promise.allSettled([fetchUS(),fetchEU(),fetchCrypto()]);
+  dbRecord(); // ← enregistre un snapshot dans l'historique persistant
   updateStatusBar();updateAll();buildSparklines();
 }
 
@@ -679,10 +694,13 @@ function updateStatusBar(){
   time.textContent='Màj '+new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 
-// ── TICK — simulation fluide pour les actifs non-live uniquement
+// ── TICK — simulation uniquement pour les actifs sans aucune source réelle
+// EU/US gardent leur dernière valeur réelle figée si le fetch échoue
 function tick(){
   Object.keys(A).forEach(k=>{
-    if(A[k].src!=='SIM')return; // actif avec prix réel → ne pas toucher
+    if(A[k].src!=='SIM')return;          // prix live → ne pas toucher
+    if(A[k].grp==='EU'||A[k].grp==='US')return; // EU/US sans live → on fige, pas de sim
+    // Crypto et OR sans live → simulation acceptable
     A[k].v+=(Math.random()-.49)*A[k].vol;
     A[k].v=Math.max(A[k].v,A[k].b*.85);
   });
@@ -763,10 +781,108 @@ function updateWatchlist(){
   }).join('');
 }
 
+// ══════════════════════════════════════════════════════
+// HISTORIQUE PERSISTANT — localStorage
+// Structure : DB[assetKey] = [ {t: timestamp_ms, v: price}, ... ]
+// On enregistre un point par refresh (toutes les 30s si live)
+// Rétention : 5 ans de données (nettoyage auto des plus anciens)
+// ══════════════════════════════════════════════════════
+const DB_KEY='tradeos_hist_v1';
+const DB_MAX_PER_ASSET=175200; // 5 ans × 365j × 96 points/j (refresh 15min) = large marge
+let DB={};
+
+function dbLoad(){
+  try{const raw=localStorage.getItem(DB_KEY);if(raw)DB=JSON.parse(raw);}
+  catch{DB={};}
+  // S'assurer que chaque actif a son tableau
+  Object.keys(A).forEach(k=>{if(!DB[k])DB[k]=[];});
+}
+
+function dbSave(){
+  // Nettoyage : garder max 5 ans par actif
+  const cutoff=Date.now()-5*365*24*3600*1000;
+  Object.keys(DB).forEach(k=>{
+    if(DB[k].length>DB_MAX_PER_ASSET)
+      DB[k]=DB[k].filter(p=>p.t>cutoff);
+  });
+  try{localStorage.setItem(DB_KEY,JSON.stringify(DB));}catch(e){
+    // localStorage plein → on purge les plus anciens (50%)
+    Object.keys(DB).forEach(k=>{DB[k]=DB[k].slice(-Math.floor(DB[k].length/2));});
+    try{localStorage.setItem(DB_KEY,JSON.stringify(DB));}catch{}
+  }
+}
+
+function dbRecord(){
+  // Enregistre un snapshot de tous les actifs qui ont un prix réel
+  const now=Date.now();
+  let saved=0;
+  Object.keys(A).forEach(k=>{
+    if(A[k].src==='SIM')return; // ne pas enregistrer la simulation
+    if(!DB[k])DB[k]=[];
+    // Eviter les doublons trop proches (< 5min)
+    const last=DB[k][DB[k].length-1];
+    if(last&&now-last.t<300000)return;
+    DB[k].push({t:now,v:+A[k].v.toFixed(4)});
+    saved++;
+  });
+  if(saved>0)dbSave();
+}
+
+// Timeframes disponibles
+const TF=[
+  {id:'LIVE', label:'LIVE',  ms:0},
+  {id:'1D',   label:'J-1',   ms:86400000},
+  {id:'1W',   label:'J-7',   ms:7*86400000},
+  {id:'1M',   label:'J-30',  ms:30*86400000},
+  {id:'1Y',   label:'A-1',   ms:365*86400000},
+  {id:'5Y',   label:'A-5',   ms:5*365*86400000},
+];
+let activeTF='LIVE';
+
+// Retourne les données historiques pour un actif + timeframe
+// Si LIVE → utilise HIST[] (buffer en mémoire, session courante)
+// Sinon → filtre DB[k] sur la période
+function getChartData(k,tfId){
+  if(tfId==='LIVE'){
+    return{
+      labels:HIST[k].map((_,i)=>i%10===0?`-${HL-i}m`:''),
+      values:[...HIST[k]],
+      pctRef:A[k].b,
+    };
+  }
+  const tf=TF.find(t=>t.id===tfId);
+  if(!tf||!DB[k]||DB[k].length<2)return null;
+  const since=Date.now()-tf.ms;
+  const pts=DB[k].filter(p=>p.t>=since);
+  if(pts.length<2)return null;
+  const pctRef=pts[0].v; // base = premier point de la période
+  // Labels : format adapté au timeframe
+  const fmt_t=(t)=>{
+    const d=new Date(t);
+    if(tfId==='1D')return d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
+    if(tfId==='1W')return d.toLocaleDateString('fr-FR',{weekday:'short',hour:'2-digit',minute:'2-digit'});
+    return d.toLocaleDateString('fr-FR',{day:'2-digit',month:'short'});
+  };
+  // Subsample si trop de points (max 120 pour la lisibilité)
+  let sampled=pts;
+  if(pts.length>120){
+    const step=Math.floor(pts.length/120);
+    sampled=pts.filter((_,i)=>i%step===0);
+    sampled.push(pts[pts.length-1]);
+  }
+  return{
+    labels:sampled.map(p=>fmt_t(p.t)),
+    values:sampled.map(p=>p.v),
+    pctRef,
+    count:pts.length,
+    oldest:new Date(pts[0].t),
+  };
+}
+
 // ── GRAPHIQUES
 let mainChart=null,activeKey='cac',sparkCharts={};
 const CFG=['EU','US','CRYPTO','OR'];let chartF='EU';
-let ASSETS_chartF='cac'; // clé active dans le filtre courant
+let ASSETS_chartF='cac';
 
 function buildChartFilters(){document.getElementById('chart-filters').innerHTML=CFG.map(g=>`<button class="fpill${g==='EU'?' on':''}" onclick="setCF('${g}',this)">${g}</button>`).join('');}
 function setCF(g,btn){
@@ -780,25 +896,78 @@ function setActiveKey(k){
   updateMainChart();
   document.querySelectorAll('.spark-card').forEach(c=>c.classList.toggle('active',c.dataset.key===k));
 }
+
+function buildTFButtons(){
+  const el=document.getElementById('chart-tf');if(!el)return;
+  el.innerHTML=TF.map(tf=>`<button class="cbtn${tf.id===activeTF?' on':''}" onclick="setTF('${tf.id}',this)">${tf.label}</button>`).join('');
+}
+function setTF(id,btn){
+  activeTF=id;
+  document.querySelectorAll('#chart-tf .cbtn').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+  updateMainChart();
+}
+
 function initMainChart(){
   const ctx=document.getElementById('mainChart').getContext('2d');
   const g=ctx.createLinearGradient(0,0,0,190);g.addColorStop(0,'rgba(0,229,255,.2)');g.addColorStop(1,'rgba(0,229,255,0)');
   mainChart=new Chart(ctx,{type:'line',
-    data:{labels:Array.from({length:HL},(_,i)=>i%10===0?`-${HL-i}m`:''),datasets:[{data:Array(HL).fill(A[activeKey].v),borderColor:'#00e5ff',borderWidth:1.5,fill:true,backgroundColor:g,tension:0.4,pointRadius:0}]},
+    data:{labels:[],datasets:[{data:[],borderColor:'#00e5ff',borderWidth:1.5,fill:true,backgroundColor:g,tension:0.4,pointRadius:0}]},
     options:{responsive:true,maintainAspectRatio:true,animation:{duration:150},
-      plugins:{legend:{display:false},tooltip:{backgroundColor:'#0d1117',borderColor:'#21262d',borderWidth:1,titleColor:'#e6edf3',bodyColor:'#e6edf3',titleFont:{family:"'Space Mono'",size:9},bodyFont:{family:"'Space Mono'",size:10},callbacks:{label:c=>' '+fmt(c.parsed.y,A[activeKey].nat,2)}}},
-      scales:{x:{grid:{color:'rgba(33,38,45,.5)'},ticks:{color:'#484f58',font:{family:"'Space Mono'",size:8},maxTicksLimit:6}},y:{position:'right',grid:{color:'rgba(33,38,45,.5)'},ticks:{color:'#484f58',font:{family:"'Space Mono'",size:8},callback:v=>fmt(v,A[activeKey].nat,0)}}}}
+      plugins:{legend:{display:false},tooltip:{backgroundColor:'#0d1117',borderColor:'#21262d',borderWidth:1,titleColor:'#e6edf3',bodyColor:'#e6edf3',titleFont:{family:"'Space Mono'",size:9},bodyFont:{family:"'Space Mono'",size:10},
+        callbacks:{label:c=>' '+fmt(c.parsed.y,A[activeKey].nat,2)}}},
+      scales:{
+        x:{grid:{color:'rgba(33,38,45,.5)'},ticks:{color:'#484f58',font:{family:"'Space Mono'",size:8},maxTicksLimit:8}},
+        y:{position:'right',grid:{color:'rgba(33,38,45,.5)'},ticks:{color:'#484f58',font:{family:"'Space Mono'",size:8},callback:v=>fmt(v,A[activeKey].nat,0)}}
+      }
+    }
   });
 }
+
 function updateMainChart(){
   if(!mainChart)return;
-  const a=A[activeKey],p=pct(activeKey);
+  const a=A[activeKey];
   const col=a.grp==='CRYPTO'||a.grp==='OR'?'#f0b429':a.grp==='EU'?'#00e5ff':'#00ff88';
-  mainChart.data.datasets[0].data=[...HIST[activeKey]];
+  const colFade=a.grp==='CRYPTO'||a.grp==='OR'?'rgba(240,180,41,.2)':a.grp==='EU'?'rgba(0,229,255,.2)':'rgba(0,255,136,.2)';
+
+  const cd=getChartData(activeKey,activeTF);
+  let labels,values,pRef;
+  if(cd){
+    labels=cd.labels; values=cd.values; pRef=cd.pctRef;
+  } else {
+    // Pas assez de données historiques → fallback LIVE
+    const live=getChartData(activeKey,'LIVE');
+    labels=live.labels; values=live.values; pRef=live.pctRef;
+  }
+
+  // % par rapport à la base de la période
+  const curVal=values[values.length-1]||a.v;
+  const p=pRef>0?(curVal-pRef)/pRef*100:pct(activeKey);
+
+  // Gradient couleur selon direction
+  const ctx=mainChart.ctx;
+  const g=ctx.createLinearGradient(0,0,0,190);
+  g.addColorStop(0,colFade); g.addColorStop(1,'rgba(0,0,0,0)');
+
+  mainChart.data.labels=labels;
+  mainChart.data.datasets[0].data=values;
   mainChart.data.datasets[0].borderColor=col;
+  mainChart.data.datasets[0].backgroundColor=g;
+
   document.getElementById('chart-title').textContent=a.n;
-  const cpEl=document.getElementById('chart-price');if(cpEl){cpEl.textContent=fmt(a.v,a.nat,2);cpEl.className='chart-price '+cl(p);}
-  const cmEl=document.getElementById('chart-meta');if(cmEl)cmEl.textContent=ar(p)+Math.abs(p).toFixed(2)+'% · '+freshLabel(a.ts,a.src);
+  const cpEl=document.getElementById('chart-price');
+  if(cpEl){cpEl.textContent=fmt(a.v,a.nat,2);cpEl.className='chart-price '+cl(p);}
+
+  // Meta : % sur la période + timestamp + nb de points si historique
+  let meta=ar(p)+Math.abs(p).toFixed(2)+'%';
+  if(activeTF!=='LIVE'&&cd){
+    const since=cd.oldest?cd.oldest.toLocaleDateString('fr-FR',{day:'2-digit',month:'short',year:'2-digit'}):'';
+    meta+=` depuis ${since} · ${cd.count} points`;
+  } else {
+    meta+=' · '+freshLabel(a.ts,a.src);
+  }
+  const cmEl=document.getElementById('chart-meta');if(cmEl)cmEl.textContent=meta;
+
   mainChart.update('none');
 }
 function buildSparklines(){
@@ -855,7 +1024,7 @@ function relT(d){try{const m=Math.floor((Date.now()-new Date(d))/60000);return m
 function parseRSS(xml,src,def){const r=[];try{const doc=new DOMParser().parseFromString(xml,'text/xml');[...doc.querySelectorAll('item,entry')].slice(0,6).forEach(el=>{const t=el.querySelector('title')?.textContent?.trim()||'';const l=el.querySelector('link')?.textContent?.trim()||'#';const dt=el.querySelector('pubDate,published')?.textContent||'';const tag=gTag(t,def);if(t)r.push({title:t,link:l,date:dt,src,tag,col:TC[tag]||'var(--cyan)'});});}catch{}return r;}
 async function fetchLiveNews(){
   document.getElementById('news-dot').style.background='var(--gold)';document.getElementById('news-status').textContent='Chargement…';
-  const res=await Promise.allSettled(FEEDS.map(f=>fetchT(`https://corsproxy.io/?${encodeURIComponent(f.url)}`,8000).then(r=>r.text()).then(x=>parseRSS(x,f.src,f.tag))));
+  const res=await Promise.allSettled(FEEDS.map(f=>fetchProxy(f.url,8000).then(x=>parseRSS(x,f.src,f.tag))));
   let items=[];res.forEach(r=>{if(r.status==='fulfilled')items=items.concat(r.value);});
   if(items.length>0){
     const seen=new Set();allNews=items.filter(i=>{const k=i.title.slice(0,40);if(seen.has(k))return false;seen.add(k);return true;}).sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,30);
@@ -913,14 +1082,28 @@ function go(n,el){document.querySelectorAll('.sec').forEach(s=>s.classList.remov
 
 // ── INIT
 async function initApp(){
+  // Charger la base historique depuis localStorage
+  dbLoad();
+
   // Clock + market status
   setInterval(()=>document.getElementById('clock').textContent=new Date().toLocaleTimeString('fr-FR',{hour12:false}),1000);
   updateMktStatus();setInterval(updateMktStatus,60000);
 
-  // Pré-remplir historique (simulation)
-  Object.keys(A).forEach(k=>{let v=A[k].v;for(let i=0;i<HL;i++){v+=(Math.random()-.49)*A[k].vol;HIST[k].push(+v.toFixed(3));}HIST[k].push(A[k].v);if(HIST[k].length>HL)HIST[k].shift();});
+  // Pré-remplir le buffer HIST (session en cours) depuis la DB si dispo
+  Object.keys(A).forEach(k=>{
+    if(DB[k]&&DB[k].length>0){
+      // Utilise les 60 derniers points connus comme base du buffer live
+      const recent=DB[k].slice(-HL);
+      recent.forEach(p=>HIST[k].push(p.v));
+    } else {
+      // Fallback simulation légère pour le buffer visuel
+      let v=A[k].v;
+      for(let i=0;i<HL;i++){v+=(Math.random()-.49)*A[k].vol;HIST[k].push(+v.toFixed(3));}
+    }
+    HIST[k].push(A[k].v);if(HIST[k].length>HL)HIST[k].shift();
+  });
 
-  buildChartFilters();buildWLFilters();initMainChart();buildSparklines();updateAll();
+  buildChartFilters();buildWLFilters();buildTFButtons();initMainChart();buildSparklines();updateAll();
 
   // Binance WebSocket — crypto tick par tick
   startBinanceWS();
@@ -938,6 +1121,5 @@ async function initApp(){
   setInterval(tick,3000);                                  // Sim 3s
 }
 </script>
-
 </body>
 </html>
