@@ -203,22 +203,22 @@ canvas{max-height:190px;}
   <div style="font-size:20px;flex-shrink:0">🛡️</div>
   <div class="ssec-t">
     <strong>100% privé & sécurisé.</strong><br>
-    Vos clés API sont stockées uniquement dans votre navigateur (localStorage). Elles ne sont jamais dans le code source, jamais envoyées à un serveur externe.
+    Vos clés API sont stockées uniquement dans votre navigateur (localStorage). Jamais dans le code, jamais envoyées à un serveur externe.
   </div>
 </div>
 
-<label class="slabel">Clé API Google Gemini</label>
+<label class="slabel">Clé API Google Gemini <span style="color:var(--red)">*</span></label>
 <input class="sinput" id="k-gemini" type="password" placeholder="AIzaSy..." autocomplete="off" spellcheck="false">
-<div class="shint">Clé gratuite sur <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a> → "Get API Key" → "Create API Key"</div>
+<div class="shint">Gratuit sur <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a> → "Get API Key"</div>
 
 <hr class="sep">
 
-<label class="slabel">Clé API NewsAPI <span style="color:var(--muted);font-size:9px">(optionnelle)</span></label>
-<input class="sinput" id="k-news" type="password" placeholder="91a43d..." autocomplete="off" spellcheck="false">
-<div class="shint">Clé gratuite sur <a href="https://newsapi.org" target="_blank">newsapi.org</a>. Si vide, actualités de démonstration.</div>
+<label class="slabel">Clé API Finnhub <span style="color:var(--red)">*</span></label>
+<input class="sinput" id="k-finnhub" type="password" placeholder="d6oljapr01..." autocomplete="off" spellcheck="false">
+<div class="shint">Données actions/indices temps réel, CORS natif — gratuit sur <a href="https://finnhub.io" target="_blank">finnhub.io</a></div>
 
 <button class="sbtn" onclick="saveKeys()">🚀 LANCER LE DASHBOARD</button>
-<div class="serr" id="serr">⚠️ La clé Gemini est requise pour activer l'assistant IA.</div>
+<div class="serr" id="serr">⚠️ Les clés Gemini et Finnhub sont requises.</div>
 ```
 
   </div>
@@ -404,28 +404,28 @@ canvas{max-height:190px;}
 
 <script>
 // ══ CLÉS — stockées dans localStorage, jamais dans le code ══
-let GK='', NK='';
+let GK='', FHK='';
 
 function saveKeys(){
-  const g=document.getElementById('k-gemini').value.trim();
-  const n=document.getElementById('k-news').value.trim();
-  if(!g){document.getElementById('serr').style.display='block';return;}
-  localStorage.setItem('_to_g',g);
-  if(n) localStorage.setItem('_to_n',n);
-  GK=g; NK=n;
+  const g  = document.getElementById('k-gemini').value.trim();
+  const fh = document.getElementById('k-finnhub').value.trim();
+  if(!g || !fh){ document.getElementById('serr').style.display='block'; return; }
+  localStorage.setItem('_to_g',  g);
+  localStorage.setItem('_to_fh', fh);
+  GK=g; FHK=fh;
   launch();
 }
 function loadKeys(){
-  GK=localStorage.getItem('_to_g')||'';
-  NK=localStorage.getItem('_to_n')||'';
-  return !!GK;
+  GK  = localStorage.getItem('_to_g')  || '';
+  FHK = localStorage.getItem('_to_fh') || '';
+  return !!GK && !!FHK;
 }
 function showSetup(){
   document.getElementById('app').style.display='none';
   document.getElementById('gear').style.display='none';
   document.getElementById('setup').style.display='flex';
   document.getElementById('k-gemini').value='';
-  document.getElementById('k-news').value='';
+  document.getElementById('k-finnhub').value='';
 }
 function launch(){
   document.getElementById('setup').style.display='none';
@@ -464,93 +464,105 @@ function startClock(){ setInterval(()=>document.getElementById('clock').textCont
 function go(n,el){ document.querySelectorAll('.sec').forEach(s=>s.classList.remove('on')); document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on')); document.getElementById('s-'+n).classList.add('on'); el.classList.add('on'); }
 
 // ══════════════════════════════════════════════
-// ÉTAPE 3A — DONNÉES LIVE : Yahoo Finance + CoinGecko
+// DONNÉES LIVE — Finnhub (CORS natif, 60 req/min gratuit)
 // ══════════════════════════════════════════════
-let liveStocks = {}; // { cac, sp, nvda, lvmh, tsla, gold }
+let liveStocks = {};
 
-const YF_SYMBOLS = {
-  cac:  '^FCHI',
-  sp:   '^GSPC',
-  nvda: 'NVDA',
-  lvmh: 'MC.PA',
-  tsla: 'TSLA',
-  gold: 'GC=F',
-  eurusd: 'EURUSD=X',
-};
-
-// Fetch avec timeout pour ne jamais bloquer
 async function fetchWithTimeout(url, ms=8000){
   const ctrl = new AbortController();
   const tid = setTimeout(()=>ctrl.abort(), ms);
   try {
     const res = await fetch(url, {signal: ctrl.signal});
-    clearTimeout(tid);
-    return res;
-  } catch(e) {
-    clearTimeout(tid);
-    throw e;
-  }
+    clearTimeout(tid); return res;
+  } catch(e){ clearTimeout(tid); throw e; }
 }
 
-async function fetchYahooQuote(symbol){
-  const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=2d`;
-  // Essaie plusieurs proxies CORS en cascade
-  const proxies = [
-    `https://corsproxy.io/?${encodeURIComponent(yfUrl)}`,
-    `https://api.allorigins.win/get?url=${encodeURIComponent(yfUrl)}`,
-  ];
-  for(const proxy of proxies){
-    try {
-      const res = await fetchWithTimeout(proxy, 7000);
-      if(!res.ok) continue;
-      const raw = await res.json();
-      // allOrigins encapsule dans .contents, corsproxy.io renvoie directement
-      const text = raw.contents || (typeof raw === 'object' ? JSON.stringify(raw) : await raw);
-      const data = typeof text === 'string' ? JSON.parse(text) : raw;
-      const q = data?.chart?.result?.[0];
-      if(!q) continue;
-      const meta  = q.meta;
-      const price = meta.regularMarketPrice;
-      const prev  = meta.chartPreviousClose || meta.previousClose || price;
-      return { price, prev };
-    } catch(e){ continue; }
-  }
-  throw new Error('Tous les proxies ont échoué pour '+symbol);
+// Symboles Finnhub : indices via /quote, forex via /forex/rates
+const FH_SYMS = {
+  sp:    { sym:'BINANCE:SPYUSDT', type:'crypto'  }, // fallback S&P via ETF
+  nvda:  { sym:'NVDA',            type:'stock'   },
+  lvmh:  { sym:'EURONEXT:MC',     type:'stock'   },
+  tsla:  { sym:'TSLA',            type:'stock'   },
+  // Indices via Yahoo en dernier recours, Finnhub les fournit sous format spécial
+  cac:   { sym:'EURONEXT:CAC',    type:'index'   },
+};
+
+// Finnhub quote : /quote?symbol=X&token=K → { c: currentPrice, pc: previousClose }
+async function finnhubQuote(symbol){
+  const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${FHK}`;
+  const res = await fetchWithTimeout(url, 7000);
+  if(!res.ok) throw new Error('HTTP '+res.status);
+  const d = await res.json();
+  if(!d.c || d.c === 0) throw new Error('Pas de prix pour '+symbol);
+  return { price: d.c, prev: d.pc || d.c };
 }
+
+// Finnhub forex : EUR/USD
+async function finnhubForex(){
+  const url = `https://finnhub.io/api/v1/forex/rates?base=USD&token=${FHK}`;
+  const res = await fetchWithTimeout(url, 7000);
+  const d = await res.json();
+  const eur = d?.quote?.EUR;
+  if(!eur) throw new Error('Pas de taux EUR/USD');
+  EUR_USD = 1 / eur; // base USD → on inverse pour avoir EUR/USD
+}
+
+// Symboles stocks US + EU à fetcher
+const FH_STOCKS = [
+  { key:'sp',   sym:'SPY'         },  // S&P 500 via ETF SPY
+  { key:'nvda', sym:'NVDA'        },
+  { key:'tsla', sym:'TSLA'        },
+  { key:'lvmh', sym:'EURONEXT:MC' },  // LVMH sur Euronext
+  { key:'gold', sym:'GLD'         },  // Or via ETF GLD
+];
+
+// Indice CAC40 — Finnhub le fournit sous ce symbole
+const FH_INDICES = [
+  { key:'cac', sym:'^CAC40' },
+  { key:'sp',  sym:'^SPX'   },  // double check S&P via indice direct
+];
 
 async function fetchLiveStocks(){
-  const keys = Object.keys(YF_SYMBOLS);
-  // Timeout global de 10s — on n'attend jamais plus
-  const results = await Promise.allSettled(
-    keys.map(k =>
-      Promise.race([
-        fetchYahooQuote(YF_SYMBOLS[k]).then(v => ({k, v})),
-        new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')), 10000))
-      ])
+  let count = 0;
+
+  // 1. Taux EUR/USD
+  try { await finnhubForex(); } catch(e){ console.warn('Forex:', e.message); }
+
+  // 2. Stocks + ETF en parallèle
+  const stockResults = await Promise.allSettled(
+    FH_STOCKS.map(({key, sym}) =>
+      finnhubQuote(sym).then(v => ({ key, ...v }))
     )
   );
-  let count = 0;
-  results.forEach(r => {
+  stockResults.forEach(r => {
     if(r.status === 'fulfilled'){
-      const {k, v} = r.value;
+      const { key, price, prev } = r.value;
+      // SPY ≈ S&P/10 (SPY suit le S&P à 1/10e)
+      const realPrice = key==='sp' ? price*10 : price;
+      const realPrev  = key==='sp' ? prev*10  : prev;
+      liveStocks[key] = { price: realPrice, prev: realPrev };
+      if(M[key]){ M[key].v = realPrice; M[key].b = realPrev; }
       count++;
-      liveStocks[k] = v;
-      if(k === 'eurusd'){
-        EUR_USD = v.price;
-      } else if(M[k]){
-        M[k].v = v.price;
-        M[k].b = v.prev || v.price;
-      }
     }
   });
-  if(count > 0){
-    updateStatusBar('Yahoo Finance');
-  } else {
-    const dot = document.getElementById('data-status-dot');
-    const txt = document.getElementById('data-status-txt');
-    if(dot) dot.style.background='var(--gold)';
-    if(txt) txt.textContent = `Mode simulation — Yahoo Finance indisponible`;
-  }
+
+  // 3. Indices CAC40 + S&P direct
+  const idxResults = await Promise.allSettled(
+    FH_INDICES.map(({key, sym}) =>
+      finnhubQuote(sym).then(v => ({ key, ...v }))
+    )
+  );
+  idxResults.forEach(r => {
+    if(r.status === 'fulfilled'){
+      const { key, price, prev } = r.value;
+      liveStocks[key] = { price, prev };
+      if(M[key]){ M[key].v = price; M[key].b = prev; }
+      count++;
+    }
+  });
+
+  updateStatusBar(count > 0 ? 'Finnhub' : 'simulation');
+  console.log(`✅ Finnhub: ${count} actifs chargés`);
 }
 
 // ══ DONNÉES LIVE CRYPTO — 4 sources en cascade, toujours une qui marche ══
@@ -1002,9 +1014,9 @@ function addMsg(text,role){
 }
 async function callGemini(q){
   const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GK}`;
-  const btcLive = liveCrypto.bitcoin ? `BTC=$${liveCrypto.bitcoin.usd.toLocaleString()} (${liveCrypto.bitcoin.usd_24h_change?.toFixed(2)}% 24h) — DONNÉES RÉELLES` : `BTC=$${M.btc.v.toFixed(0)} (simulé)`;
-  const ethLive = liveCrypto.ethereum ? `ETH=$${liveCrypto.ethereum.usd.toLocaleString()} (${liveCrypto.ethereum.usd_24h_change?.toFixed(2)}% 24h) — DONNÉES RÉELLES` : `ETH=$${M.eth.v.toFixed(0)} (simulé)`;
-  const ctx=`Tu es TradeOS AI, assistant trading expert. Données marché : CAC40=${M.cac.v.toFixed(0)} pts (simulé), S&P500=${M.sp.v.toFixed(0)} pts (simulé), ${btcLive}, ${ethLive}, NVIDIA=$${M.nvda.v.toFixed(0)}, LVMH=${M.lvmh.v.toFixed(0)}€, Tesla=$${M.tsla.v.toFixed(0)}. Devise affichée: ${CUR}. Taux EUR/USD: ${EUR_USD.toFixed(4)}. Réponds en français, de façon concise avec emojis. ⚠️ Rappelle que ce ne sont pas des conseils financiers officiels.`;
+  const isLive = Object.keys(liveStocks).length > 0;
+  const src = isLive ? 'DONNÉES RÉELLES Finnhub' : 'simulé';
+  const ctx=`Tu es TradeOS AI, assistant trading expert. Données marché (${src}) : CAC40=${M.cac.v.toFixed(0)} pts, S&P500=${M.sp.v.toFixed(0)} pts, BTC=$${M.btc.v.toFixed(0)} (${pct('btc')}% 24h), ETH=$${M.eth.v.toFixed(0)} (${pct('eth')}% 24h), NVIDIA=$${M.nvda.v.toFixed(2)}, LVMH=${M.lvmh.v.toFixed(2)}€, Tesla=$${M.tsla.v.toFixed(2)}, Or=$${M.gold.v.toFixed(0)}. Devise affichée: ${CUR}. Taux EUR/USD: ${EUR_USD.toFixed(4)}. Réponds en français, de façon concise avec emojis. ⚠️ Rappelle que ce ne sont pas des conseils financiers officiels.`;
   const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:ctx+'\n\nQuestion: '+q}]}],generationConfig:{maxOutputTokens:500,temperature:0.7}})});
   if(!r.ok)throw new Error('Erreur Gemini '+r.status+' — vérifiez votre clé (⚙️)');
   const d=await r.json();
