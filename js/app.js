@@ -147,18 +147,25 @@ if (el) el.innerHTML = items + items; // Doublé pour boucle seamless
 // ── KPI CARDS ─────────────────────────────────────────
 function renderKPI() {
 const kpis = [
-{ id: ‘cac’,  label: ‘CAC 40’,  key: ‘cac’  },
-{ id: ‘sp’,   label: ‘S&P 500’, key: ‘sp’   },
-{ id: ‘btc’,  label: ‘Bitcoin’, key: ‘btc’, gold: true },
+{ key: ‘cac’, gold: false },
+{ key: ‘sp’,  gold: false },
+{ key: ‘btc’, gold: true  },
 ];
 kpis.forEach(kpi => {
 const d = DATA.prices[kpi.key];
-const valEl = document.getElementById(‘kpi-v-’ + kpi.id);
-const subEl = document.getElementById(‘kpi-s-’ + kpi.id);
-if (!valEl || !d?.price) return;
-valEl.textContent = DATA.fmt(kpi.key, APP.currency, 0);
-valEl.className = ’kpi-value ’ + (kpi.gold ? ‘gold’ : cl(d.pct));
-if (subEl) subEl.textContent = `${arw(d.pct)} ${fmtPct(d.pct)} · ${d.src || '—'} ${fmtAgo(d.ts?.getTime())}`;
+if (!d?.price) return;
+const txt = DATA.fmt(kpi.key, APP.currency, 0);
+const cls = ’kpi-value ’ + (kpi.gold ? ‘gold’ : cl(d.pct));
+const sub = `${arw(d.pct)} ${fmtPct(d.pct)} · ${d.src || '—'} ${fmtAgo(d.ts?.getTime())}`;
+// Mettre à jour TOUS les éléments avec ce préfixe (les deux tabs)
+[‘kpi-v-’+kpi.key, ‘kpi-v-’+kpi.key+‘2’].forEach(id => {
+const el = document.getElementById(id);
+if (el) { el.textContent = txt; el.className = cls; }
+});
+[‘kpi-s-’+kpi.key, ‘kpi-s-’+kpi.key+‘2’].forEach(id => {
+const el = document.getElementById(id);
+if (el) el.textContent = sub;
+});
 });
 }
 
@@ -237,6 +244,15 @@ metaEl.textContent = `${arw(pctPeriod)} ${fmtPct(pctPeriod)} depuis ${from} · $
 const color = a.nat === ‘EUR’ ? ‘#00e5ff’ : [‘btc’,‘eth’,‘sol’,‘bnb’,‘xrp’,‘ada’].includes(id) ? ‘#f0b429’ : ‘#00ff88’;
 const ctx = document.getElementById(‘mainChart’);
 if (!ctx) return;
+
+// Pas assez de données — afficher placeholder
+if (values.length < 2) {
+if (APP.chartInstance) { APP.chartInstance.destroy(); APP.chartInstance = null; }
+const gCtx2 = ctx.getContext(‘2d’);
+gCtx2.clearRect(0, 0, ctx.width, ctx.height);
+if (metaEl) metaEl.textContent = ‘⟳ En attente de données Binance…’;
+return;
+}
 
 if (APP.chartInstance) APP.chartInstance.destroy();
 const gCtx = ctx.getContext(‘2d’);
@@ -600,9 +616,14 @@ renderMainChart();
 
 // ── INIT ──────────────────────────────────────────────
 async function initApp() {
-// Vérifier les clés
-if (!CFG.keys.hasMinimum()) {
+// Vérifier les clés — vérification stricte (pas vide, pas null, longueur > 5)
+const gemini  = localStorage.getItem(’_to_g’) || ‘’;
+const finnhub = localStorage.getItem(’_to_f’) || ‘’;
+const hasKeys = gemini.length > 5 && finnhub.length > 5;
+
+if (!hasKeys) {
 document.getElementById(‘setup-screen’).style.display = ‘flex’;
+document.getElementById(‘loading-overlay’).style.display = ‘none’;
 return;
 }
 document.getElementById(‘setup-screen’).style.display = ‘none’;
@@ -638,14 +659,25 @@ await DATA.refresh().catch(() => {});
 
 // Construire l’UI
 setLoading(‘Construction interface…’, 90);
+
+// Init BTC comme actif par défaut
+APP.activeChartAsset = ‘btc’;
+APP.activeFilter = ‘CRYPTO’;
+APP.activeTab = ‘markets’;
+
 renderAll();
+renderSparklines();
 
 // News
 fetchNews().catch(() => {});
 
-// Scan auto si activé
 setLoading(‘Prêt.’, 100);
-setTimeout(hideLoading, 500);
+setTimeout(() => {
+hideLoading();
+// Re-render après un délai pour s’assurer que Binance WS a des données
+setTimeout(() => { renderAll(); renderSparklines(); }, 2000);
+setTimeout(() => { renderAll(); renderSparklines(); }, 5000);
+}, 600);
 
 // Event listeners
 window.addEventListener(‘prices-refreshed’, renderAll);
@@ -682,8 +714,15 @@ const f  = document.getElementById(‘inp-finnhub’)?.value?.trim();
 const bk = document.getElementById(‘inp-bk’)?.value?.trim();
 const bs = document.getElementById(‘inp-bs’)?.value?.trim();
 const av = document.getElementById(‘inp-av’)?.value?.trim();
-if (!g || !f) { alert(‘Gemini et Finnhub sont requis’); return; }
-CFG.keys.save(g, f, bk, bs, av);
+if (!g || g.length < 5) { alert(‘Clé Gemini invalide ou manquante’); return; }
+if (!f || f.length < 5) { alert(‘Clé Finnhub invalide ou manquante’); return; }
+// Sauvegarder directement dans localStorage
+localStorage.setItem(’_to_g’, g);
+localStorage.setItem(’_to_f’, f);
+if (bk) localStorage.setItem(’_to_bk’, bk);
+if (bs) localStorage.setItem(’_to_bs’, bs);
+if (av) localStorage.setItem(’_to_av’, av);
+document.getElementById(‘setup-screen’).style.display = ‘none’;
 initApp();
 }
 
