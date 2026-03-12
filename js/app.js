@@ -1,12 +1,11 @@
 // ══════════════════════════════════════════════════════
-// app.js — Orchestrateur principal TradeOS v5
+// app.js — Orchestrateur TradeOS v5.1
 // ══════════════════════════════════════════════════════
 ‘use strict’;
 
-// ── État global UI ────────────────────────────────────
-const APP = {
+var APP = {
 currency: ‘EUR’,
-activeTab: ‘signals’,
+activeTab: ‘markets’,
 activeChartAsset: ‘btc’,
 activeChartTF: ‘LIVE’,
 activeFilter: ‘CRYPTO’,
@@ -16,8 +15,6 @@ autoTradeEnabled: false,
 scanning: false,
 newsFilter: ‘all’,
 allNews: [],
-
-// Timeframes
 TF: [
 { id: ‘LIVE’, label: ‘LIVE’ },
 { id: ‘1D’,   label: ‘J-1’,  ms: 86400000 },
@@ -26,250 +23,245 @@ TF: [
 { id: ‘1Y’,   label: ‘A-1’,  ms: 365*86400000 },
 { id: ‘5Y’,   label: ‘A-5’,  ms: 5*365*86400000 },
 ],
-
-// Filtres actifs
-FILTERS: [‘CRYPTO’, ‘US’, ‘EU’, ‘INDICES’],
 };
 
-// ── UTILITAIRES FORMATAGE ─────────────────────────────
-function fmtPrice(id) { return DATA.fmt(id, APP.currency); }
-function fmtPct(pct) {
-if (pct === undefined || pct === null || isNaN(pct)) return ‘—’;
-const sign = pct >= 0 ? ‘+’ : ‘’;
-return `${sign}${pct.toFixed(2)}%`;
+// ── UTILS ─────────────────────────────────────────────
+function fmtPct(p) {
+if (p === null || p === undefined || isNaN(p)) return ‘—’;
+return (p >= 0 ? ‘+’ : ‘’) + p.toFixed(2) + ‘%’;
 }
 function fmtAgo(ts) {
 if (!ts) return ‘—’;
-const m = Math.floor((Date.now() - ts) / 60000);
-return m < 1 ? ‘<1min’ : m < 60 ? `${m}min` : `${Math.floor(m/60)}h`;
+var m = Math.floor((Date.now() - ts) / 60000);
+return m < 1 ? ‘<1min’ : m < 60 ? m + ‘min’ : Math.floor(m/60) + ‘h’;
 }
-function arw(pct) { return pct >= 0 ? ‘▲’ : ‘▼’; }
-function cl(pct) { return pct >= 0 ? ‘up’ : ‘dn’; }
+function arw(p) { return (p >= 0) ? ‘▲’ : ‘▼’; }
+function cl(p)  { return (p >= 0) ? ‘up’ : ‘dn’; }
 
 // ── TOAST ─────────────────────────────────────────────
-function toast(msg, type = ‘success’, duration = 4000) {
-const el = document.createElement(‘div’);
-el.className = `toast ${type}`;
+function toast(msg, type, duration) {
+var el = document.createElement(‘div’);
+el.className = ’toast ’ + (type || ‘success’);
 el.textContent = msg;
-document.getElementById(‘toast-container’).appendChild(el);
-setTimeout(() => el.remove(), duration);
+var c = document.getElementById(‘toast-container’);
+if (c) c.appendChild(el);
+setTimeout(function() { if (el.parentNode) el.parentNode.removeChild(el); }, duration || 4000);
 }
 
-// ── LOADING OVERLAY ───────────────────────────────────
+// ── LOADING ───────────────────────────────────────────
 function setLoading(msg, pct) {
-const ov = document.getElementById(‘loading-overlay’);
-const msgEl = document.getElementById(‘loading-msg’);
-const fill = document.getElementById(‘loading-fill’);
+var ov = document.getElementById(‘loading-overlay’);
+var m  = document.getElementById(‘loading-msg’);
+var f  = document.getElementById(‘loading-fill’);
 if (ov) ov.style.display = ‘flex’;
-if (msgEl) msgEl.textContent = msg;
-if (fill) fill.style.width = pct + ‘%’;
+if (m)  m.textContent = msg || ‘’;
+if (f)  f.style.width  = (pct || 0) + ‘%’;
 }
 function hideLoading() {
-const ov = document.getElementById(‘loading-overlay’);
+var ov = document.getElementById(‘loading-overlay’);
 if (ov) ov.style.display = ‘none’;
 }
 
 // ── TABS ──────────────────────────────────────────────
 function goTab(name, btn) {
-document.querySelectorAll(’.section’).forEach(s => s.classList.remove(‘on’));
-document.querySelectorAll(’.tab-btn’).forEach(t => t.classList.remove(‘on’));
-document.getElementById(‘s-’ + name).classList.add(‘on’);
-btn.classList.add(‘on’);
+document.querySelectorAll(’.section’).forEach(function(s) { s.classList.remove(‘on’); });
+document.querySelectorAll(’.tab-btn’).forEach(function(t) { t.classList.remove(‘on’); });
+var sec = document.getElementById(‘s-’ + name);
+if (sec) sec.classList.add(‘on’);
+if (btn) btn.classList.add(‘on’);
 APP.activeTab = name;
-if (name === ‘markets’) renderSparklines();
+if (name === ‘markets’)   { renderSparklines(); renderMainChart(); }
+if (name === ‘watchlist’) { renderWatchlist(); }
+if (name === ‘portfolio’) { renderPositions(); renderPerformance(); }
 }
 
 // ── DEVISE ────────────────────────────────────────────
 function setCurrency(cur, btn) {
 APP.currency = cur;
-document.querySelectorAll(’.cur-btn’).forEach(b => b.classList.remove(‘on’));
-btn.classList.add(‘on’);
-renderAll();
+document.querySelectorAll(’.cur-btn’).forEach(function(b) { b.classList.remove(‘on’); });
+if (btn) btn.classList.add(‘on’);
+renderKPI(); renderTicker(); renderSparklines(); renderMainChart(); renderWatchlist();
 }
 
-// ── AUTO-TRADE TOGGLE ─────────────────────────────────
+// ── AUTO TRADE TOGGLE ─────────────────────────────────
 function toggleAutoTrade(el) {
 APP.autoTradeEnabled = !APP.autoTradeEnabled;
 el.classList.toggle(‘on’, APP.autoTradeEnabled);
-const label = document.getElementById(‘auto-label’);
-if (label) label.textContent = APP.autoTradeEnabled ? ‘AUTO ON’ : ‘AUTO OFF’;
-if (APP.autoTradeEnabled) {
-if (!CFG.keys.hasBinance()) {
+var lbl = document.getElementById(‘auto-label’);
+if (lbl) lbl.textContent = APP.autoTradeEnabled ? ‘AUTO ON’ : ‘AUTO OFF’;
+if (APP.autoTradeEnabled && !CFG.keys.hasBinance()) {
 toast(‘⚠️ Clé Binance non configurée — va dans Paramètres’, ‘warning’);
 APP.autoTradeEnabled = false;
 el.classList.remove(‘on’);
-return;
-}
-toast(‘🤖 Trading automatique activé’, ‘success’);
 } else {
-toast(‘⏸ Trading automatique suspendu’, ‘warning’);
+toast(APP.autoTradeEnabled ? ‘🤖 Auto-trading activé’ : ‘⏸ Auto-trading suspendu’,
+APP.autoTradeEnabled ? ‘success’ : ‘warning’);
 }
 }
 
 // ── MARCHÉ STATUS ─────────────────────────────────────
 function updateMarketStatus() {
-const now = new Date();
-const paris = new Date(now.toLocaleString(‘en-US’, { timeZone: ‘Europe/Paris’ }));
-const ph = paris.getHours(), pm = paris.getMinutes(), pd = paris.getDay();
-const isWeekday = pd >= 1 && pd <= 5;
-const euOpen = isWeekday && (ph * 60 + pm) >= 540 && (ph * 60 + pm) <= 1055;
-
-const ny = new Date(now.toLocaleString(‘en-US’, { timeZone: ‘America/New_York’ }));
-const nh = ny.getHours(), nm = ny.getMinutes(), nd = ny.getDay();
-const nyWeekday = nd >= 1 && nd <= 5;
-const usOpen = nyWeekday && (nh * 60 + nm) >= 570 && (nh * 60 + nm) <= 960;
-
-[‘eu’, ‘us’].forEach(mkt => {
-const el = document.getElementById(‘mkt-’ + mkt);
+var now = new Date();
+var paris = new Date(now.toLocaleString(‘en-US’, { timeZone: ‘Europe/Paris’ }));
+var ph = paris.getHours(), pm = paris.getMinutes(), pd = paris.getDay();
+var euOpen = pd >= 1 && pd <= 5 && (ph * 60 + pm) >= 540 && (ph * 60 + pm) <= 1055;
+var ny = new Date(now.toLocaleString(‘en-US’, { timeZone: ‘America/New_York’ }));
+var nh = ny.getHours(), nm = ny.getMinutes(), nd = ny.getDay();
+var usOpen = nd >= 1 && nd <= 5 && (nh * 60 + nm) >= 570 && (nh * 60 + nm) <= 960;
+[‘eu’,‘us’].forEach(function(mkt) {
+var el = document.getElementById(‘mkt-’ + mkt);
 if (!el) return;
-const open = mkt === ‘eu’ ? euOpen : usOpen;
+var open = mkt === ‘eu’ ? euOpen : usOpen;
 el.textContent = mkt.toUpperCase() + (open ? ’ ●’ : ’ ○’);
 el.className = ’mkt-pill ’ + (open ? ‘mkt-open’ : ‘mkt-closed’);
 });
-
-return { euOpen, usOpen };
+return { euOpen: euOpen, usOpen: usOpen };
 }
 
-// ── TICKER BANDE DÉFILANTE ────────────────────────────
+// ── TICKER ────────────────────────────────────────────
 function renderTicker() {
-const all = […CFG.assets.crypto, …CFG.assets.us, …CFG.assets.indices];
-const items = all.map(a => {
-const d = DATA.prices[a.id];
-if (!d?.price) return `<span class="ticker-item"><span class="ticker-name">${a.name}</span><span class="ticker-price" style="color:var(--muted)">—</span></span>`;
-const v = DATA.fmt(a.id, APP.currency);
-const p = d.pct;
-return `<span class="ticker-item"><span class="ticker-name">${a.name}</span><span class="ticker-price">${v}</span><span class="ticker-chg ${p>=0?'up':'dn'}">${arw(p)}${Math.abs(p).toFixed(2)}%</span></span>`;
+var all = CFG.assets.crypto.concat(CFG.assets.us).concat(CFG.assets.indices);
+var html = all.map(function(a) {
+var d = DATA.prices[a.id];
+if (!d || !d.price) return ‘<span class="ticker-item"><span class="ticker-name">’ + a.name + ‘</span><span class="ticker-price" style="color:var(--muted)">—</span></span>’;
+return ‘<span class="ticker-item"><span class="ticker-name">’ + a.name + ‘</span><span class="ticker-price">’ + DATA.fmt(a.id, APP.currency) + ‘</span><span class="ticker-chg ' + cl(d.pct) + '">’ + arw(d.pct) + Math.abs(d.pct).toFixed(2) + ‘%</span></span>’;
 }).join(’’);
-const el = document.getElementById(‘ticker-inner’);
-if (el) el.innerHTML = items + items; // Doublé pour boucle seamless
+var el = document.getElementById(‘ticker-inner’);
+if (el) el.innerHTML = html + html;
 }
 
-// ── KPI CARDS ─────────────────────────────────────────
+// ── KPI ───────────────────────────────────────────────
 function renderKPI() {
-const kpis = [
-{ key: ‘cac’, gold: false },
-{ key: ‘sp’,  gold: false },
-{ key: ‘btc’, gold: true  },
-];
-kpis.forEach(kpi => {
-const d = DATA.prices[kpi.key];
-if (!d?.price) return;
-const txt = DATA.fmt(kpi.key, APP.currency, 0);
-const cls = ’kpi-value ’ + (kpi.gold ? ‘gold’ : cl(d.pct));
-const sub = `${arw(d.pct)} ${fmtPct(d.pct)} · ${d.src || '—'} ${fmtAgo(d.ts?.getTime())}`;
-// Mettre à jour TOUS les éléments avec ce préfixe (les deux tabs)
-[‘kpi-v-’+kpi.key, ‘kpi-v-’+kpi.key+‘2’].forEach(id => {
-const el = document.getElementById(id);
-if (el) { el.textContent = txt; el.className = cls; }
-});
-[‘kpi-s-’+kpi.key, ‘kpi-s-’+kpi.key+‘2’].forEach(id => {
-const el = document.getElementById(id);
-if (el) el.textContent = sub;
+var kpis = [{key:‘cac’,gold:false},{key:‘sp’,gold:false},{key:‘btc’,gold:true}];
+kpis.forEach(function(kpi) {
+var d = DATA.prices[kpi.key];
+if (!d || !d.price) return;
+var txt = DATA.fmt(kpi.key, APP.currency, 0);
+var cls = ’kpi-value ’ + (kpi.gold ? ‘gold’ : cl(d.pct));
+var sub = arw(d.pct) + ’ ’ + fmtPct(d.pct) + ’ · ’ + (d.src || ‘—’) + ’ ’ + fmtAgo(d.ts ? d.ts.getTime() : null);
+[kpi.key, kpi.key + ‘2’].forEach(function(suffix) {
+var v = document.getElementById(‘kpi-v-’ + suffix);
+var s = document.getElementById(‘kpi-s-’ + suffix);
+if (v) { v.textContent = txt; v.className = cls; }
+if (s) s.textContent = sub;
 });
 });
 }
 
-// ── FILTRE GRAPHIQUE ──────────────────────────────────
+// ── FILTRES ───────────────────────────────────────────
 function setFilter(f, btn) {
 APP.activeFilter = f;
-document.querySelectorAll(’.fpill’).forEach(b => b.classList.remove(‘on’));
-btn.classList.add(‘on’);
-// Sélectionner le premier actif du groupe
-const map = { CRYPTO: CFG.assets.crypto, US: CFG.assets.us, EU: CFG.assets.eu, INDICES: CFG.assets.indices };
-const first = (map[f] || [])[0];
-if (first) setActiveAsset(first.id);
+document.querySelectorAll(’.fpill’).forEach(function(b) { b.classList.remove(‘on’); });
+if (btn) btn.classList.add(‘on’);
+var map = { CRYPTO: CFG.assets.crypto, US: CFG.assets.us, EU: CFG.assets.eu, INDICES: CFG.assets.indices };
+var first = (map[f] || [])[0];
+if (first) APP.activeChartAsset = first.id;
 renderSparklines();
+renderMainChart();
 }
 
 function setActiveAsset(id) {
 APP.activeChartAsset = id;
-document.querySelectorAll(’.spark-card’).forEach(c => c.classList.toggle(‘active’, c.dataset.key === id));
+document.querySelectorAll(’.spark-card’).forEach(function(c) { c.classList.toggle(‘active’, c.dataset.key === id); });
 renderMainChart();
 }
 
 // ── GRAPHIQUE PRINCIPAL ───────────────────────────────
 function renderMainChart() {
-const id = APP.activeChartAsset;
-const d = DATA.prices[id];
-const a = […CFG.assets.crypto, …CFG.assets.us, …CFG.assets.eu, …CFG.assets.indices].find(x => x.id === id);
+var id = APP.activeChartAsset;
+var allAssets = CFG.assets.crypto.concat(CFG.assets.us).concat(CFG.assets.eu).concat(CFG.assets.indices);
+var a = allAssets.find(function(x) { return x.id === id; });
 if (!a) return;
 
-// Titre + prix
-const titleEl = document.getElementById(‘chart-title’);
-const priceEl = document.getElementById(‘chart-price-big’);
-const metaEl = document.getElementById(‘chart-meta-line’);
+var d = DATA.prices[id];
+var titleEl   = document.getElementById(‘chart-title’);
+var priceEl   = document.getElementById(‘chart-price-big’);
+var metaEl    = document.getElementById(‘chart-meta-line’);
 if (titleEl) titleEl.textContent = a.name;
-if (priceEl && d?.price) {
+if (priceEl && d && d.price) {
 priceEl.textContent = DATA.fmt(id, APP.currency);
 priceEl.className = ’chart-price-big ’ + cl(d.pct || 0);
 }
-if (metaEl && d) {
-const pct = d.pct || 0;
-metaEl.textContent = `${arw(pct)} ${fmtPct(pct)} · ${d.src || 'N/A'} · ${fmtAgo(d.ts?.getTime())}`;
-}
 
-// Données graphique selon timeframe
-let labels = [], values = [];
+var labels = [], values = [];
+
 if (APP.activeChartTF === ‘LIVE’) {
-const buf = DATA.getLiveBuffer(id);
-labels = buf.map((*, i) => i % 10 === 0 ? `-${buf.length - i}m` : ‘’);
-values = buf.map(p => p.v);
+var buf = DATA.getLiveBuffer(id);
+if (buf.length >= 2) {
+labels = buf.map(function(*, i) { return i % 10 === 0 ? ‘-’ + (buf.length - i) + ‘m’ : ‘’; });
+values = buf.map(function(p) { return p.v; });
 } else {
-const tf = APP.TF.find(t => t.id === APP.activeChartTF);
-const since = Date.now() - (tf?.ms || 86400000);
-const hist = (HISTORY.db[id]?.live || []).filter(p => p.t >= since);
-const ohlcv = (HISTORY.get(id, ‘1d’) || []).filter(c => c.t >= since);
-// Combiner live + OHLCV journalier
-const combined = […ohlcv.map(c => ({ t: c.t, v: c.c })), …hist].sort((a, b) => a.t - b.t);
-if (combined.length < 2) {
-if (metaEl) metaEl.textContent = ‘⚠️ Pas encore de données pour cette période — recharge demain’;
-values = (DATA.getLiveBuffer(id) || []).map(p => p.v);
-labels = values.map((*, i) => ‘’);
-} else {
-const fmt = tf.ms <= 86400000
-? t => new Date(t).toLocaleTimeString(‘fr-FR’, { hour: ‘2-digit’, minute: ‘2-digit’ })
-: t => new Date(t).toLocaleDateString(‘fr-FR’, { day: ‘2-digit’, month: ‘short’ });
-const step = combined.length > 120 ? Math.floor(combined.length / 120) : 1;
-const sampled = combined.filter((_, i) => i % step === 0);
-labels = sampled.map(p => fmt(p.t));
-values = sampled.map(p => p.v);
-if (metaEl && values.length >= 2) {
-const pctPeriod = ((values[values.length-1] - values[0]) / values[0] * 100);
-const from = new Date(combined[0].t).toLocaleDateString(‘fr-FR’, { day: ‘2-digit’, month: ‘short’, year: ‘2-digit’ });
-metaEl.textContent = `${arw(pctPeriod)} ${fmtPct(pctPeriod)} depuis ${from} · ${combined.length} pts`;
+// Pas encore de buffer live — utiliser les dernières candles 1h
+var candles1h = HISTORY.get(id, ‘1h’).slice(-60);
+if (candles1h.length >= 2) {
+labels = candles1h.map(function(c) { return new Date(c.t).toLocaleTimeString(‘fr-FR’, {hour:‘2-digit’,minute:‘2-digit’}); });
+values = candles1h.map(function(c) { return c.c; });
 }
+}
+} else {
+var tf = APP.TF.find(function(t) { return t.id === APP.activeChartTF; });
+var since = Date.now() - (tf ? tf.ms : 86400000);
+// Combiner historique OHLCV + live
+var ohlcv = HISTORY.get(id, ‘1d’).filter(function(c) { return c.t >= since; });
+var live  = (HISTORY.db[id] && HISTORY.db[id][‘live’] || []).filter(function(p) { return p.t >= since; });
+var combined = ohlcv.map(function(c) { return {t:c.t, v:c.c}; }).concat(live).sort(function(a,b) { return a.t-b.t; });
+if (combined.length >= 2) {
+var step = combined.length > 150 ? Math.floor(combined.length / 150) : 1;
+var sampled = combined.filter(function(*, i) { return i % step === 0; });
+var fmtDate = tf && tf.ms <= 86400000
+? function(t) { return new Date(t).toLocaleTimeString(‘fr-FR’, {hour:‘2-digit’,minute:‘2-digit’}); }
+: function(t) { return new Date(t).toLocaleDateString(‘fr-FR’, {day:‘2-digit’,month:‘short’}); };
+labels = sampled.map(function(p) { return fmtDate(p.t); });
+values = sampled.map(function(p) { return p.v; });
+if (metaEl && values.length >= 2) {
+var pctP = (values[values.length-1] - values[0]) / values[0] * 100;
+var fromDate = new Date(combined[0].t).toLocaleDateString(‘fr-FR’, {day:‘2-digit’,month:‘short’,year:‘2-digit’});
+metaEl.textContent = arw(pctP) + ’ ’ + fmtPct(pctP) + ’ depuis ’ + fromDate + ’ · ’ + combined.length + ’ pts’;
+}
+} else {
+if (metaEl) metaEl.textContent = ‘⚠️ Pas encore de données pour cette période’;
+// fallback sur 1h
+var fb = DATA.getLiveBuffer(id);
+labels = fb.map(function() { return ‘’; });
+values = fb.map(function(p) { return p.v; });
 }
 }
 
-const color = a.nat === ‘EUR’ ? ‘#00e5ff’ : [‘btc’,‘eth’,‘sol’,‘bnb’,‘xrp’,‘ada’].includes(id) ? ‘#f0b429’ : ‘#00ff88’;
-const ctx = document.getElementById(‘mainChart’);
+var color = [‘btc’,‘eth’,‘sol’,‘bnb’,‘xrp’,‘ada’].includes(id) ? ‘#f0b429’ : a.nat === ‘EUR’ ? ‘#00e5ff’ : ‘#00ff88’;
+var ctx = document.getElementById(‘mainChart’);
 if (!ctx) return;
 
-// Pas assez de données — afficher placeholder
 if (values.length < 2) {
 if (APP.chartInstance) { APP.chartInstance.destroy(); APP.chartInstance = null; }
-const gCtx2 = ctx.getContext(‘2d’);
-gCtx2.clearRect(0, 0, ctx.width, ctx.height);
-if (metaEl) metaEl.textContent = ‘⟳ En attente de données Binance…’;
+if (metaEl) metaEl.textContent = ‘⟳ En attente des données…’;
 return;
 }
 
-if (APP.chartInstance) APP.chartInstance.destroy();
-const gCtx = ctx.getContext(‘2d’);
-const grad = gCtx.createLinearGradient(0, 0, 0, 200);
+if (APP.chartInstance) { APP.chartInstance.destroy(); APP.chartInstance = null; }
+var gCtx = ctx.getContext(‘2d’);
+var grad = gCtx.createLinearGradient(0, 0, 0, 200);
 grad.addColorStop(0, color + ‘33’);
 grad.addColorStop(1, ‘transparent’);
+
+if (d && metaEl && APP.activeChartTF === ‘LIVE’) {
+metaEl.textContent = arw(d.pct || 0) + ’ ’ + fmtPct(d.pct) + ’ · ’ + (d.src || ‘—’) + ’ · ’ + fmtAgo(d.ts ? d.ts.getTime() : null);
+}
 
 APP.chartInstance = new Chart(ctx, {
 type: ‘line’,
 data: {
-labels,
+labels: labels,
 datasets: [{ data: values, borderColor: color, borderWidth: 1.5, fill: true, backgroundColor: grad, tension: 0.4, pointRadius: 0 }]
 },
 options: {
-responsive: true, maintainAspectRatio: true, animation: { duration: 200 },
-plugins: { legend: { display: false },
-tooltip: { backgroundColor: ‘#0d1117’, borderColor: ‘#21262d’, borderWidth: 1, titleColor: ‘#e6edf3’, bodyColor: ‘#e6edf3’, callbacks: { label: c => ’ ’ + DATA.fmt(id, APP.currency) } }
+responsive: true, maintainAspectRatio: true, animation: { duration: 150 },
+plugins: {
+legend: { display: false },
+tooltip: {
+backgroundColor: ‘#0d1117’, borderColor: ‘#21262d’, borderWidth: 1,
+titleColor: ‘#e6edf3’, bodyColor: ‘#e6edf3’,
+callbacks: { label: function(c) { return ’ ’ + c.parsed.y.toFixed(2); } }
+}
 },
 scales: {
 x: { grid: { color: ‘rgba(33,38,45,.4)’ }, ticks: { color: ‘#484f58’, font: { family: “‘Space Mono’”, size: 8 }, maxTicksLimit: 8 } },
@@ -281,46 +273,51 @@ y: { position: ‘right’, grid: { color: ‘rgba(33,38,45,.4)’ }, ticks: { c
 
 // ── SPARKLINES ────────────────────────────────────────
 function renderSparklines() {
-const map = { CRYPTO: CFG.assets.crypto, US: CFG.assets.us, EU: CFG.assets.eu, INDICES: CFG.assets.indices };
-const assets = map[APP.activeFilter] || CFG.assets.crypto;
-const grid = document.getElementById(‘spark-grid’);
+var map = { CRYPTO: CFG.assets.crypto, US: CFG.assets.us, EU: CFG.assets.eu, INDICES: CFG.assets.indices };
+var assets = map[APP.activeFilter] || CFG.assets.crypto;
+var grid = document.getElementById(‘spark-grid’);
 if (!grid) return;
 
+// Détruire anciens charts
+Object.keys(APP.sparkCharts).forEach(function(k) {
+try { APP.sparkCharts[k].destroy(); } catch {}
+});
+APP.sparkCharts = {};
+
 grid.innerHTML = ‘’;
-assets.forEach(a => {
-const d = DATA.prices[a.id];
-const buf = DATA.getLiveBuffer(a.id);
-const pct = d?.pct || 0;
-const color = a.nat === ‘EUR’ ? ‘#00e5ff’ : [‘btc’,‘eth’,‘sol’,‘bnb’,‘xrp’,‘ada’].includes(a.id) ? ‘#f0b429’ : ‘#00ff88’;
-const hasPrice = d?.price > 0;
+assets.forEach(function(a) {
+var d = DATA.prices[a.id];
+var buf = DATA.getLiveBuffer(a.id);
+// Fallback sur candles 1h si pas encore de buffer live
+var chartData = buf.length >= 2 ? buf.map(function(p) { return p.v; }) : HISTORY.getClose(a.id, ‘1h’).slice(-60);
+var pct = d && d.pct ? d.pct : 0;
+var hasPrice = d && d.price > 0;
+var color = [‘btc’,‘eth’,‘sol’,‘bnb’,‘xrp’,‘ada’].includes(a.id) ? ‘#f0b429’ : a.nat === ‘EUR’ ? ‘#00e5ff’ : ‘#00ff88’;
 
 ```
-const card = document.createElement('div');
+var card = document.createElement('div');
 card.className = 'spark-card' + (a.id === APP.activeChartAsset ? ' active' : '');
 card.dataset.key = a.id;
-card.onclick = () => setActiveAsset(a.id);
-card.innerHTML = `
-  <div class="spark-head">
-    <span class="spark-name">${a.name}</span>
-    <span class="spark-dot" style="background:${hasPrice ? color : 'var(--muted)'}"></span>
-  </div>
-  <div class="spark-price">${hasPrice ? DATA.fmt(a.id, APP.currency) : '—'}</div>
-  <div class="spark-chg ${cl(pct)}">${hasPrice ? arw(pct) + ' ' + fmtPct(pct) : 'Pas de données'}</div>
-  <div class="spark-src">${d?.src || ''} ${d?.ts ? fmtAgo(d.ts.getTime()) : ''}</div>
-  <canvas class="spark-canvas" id="sk-${a.id}"></canvas>`;
+card.onclick = function() { setActiveAsset(a.id); };
+card.innerHTML =
+  '<div class="spark-head"><span class="spark-name">' + a.name + '</span><span class="spark-dot" style="background:' + (hasPrice ? color : 'var(--muted)') + '"></span></div>' +
+  '<div class="spark-price">' + (hasPrice ? DATA.fmt(a.id, APP.currency) : '—') + '</div>' +
+  '<div class="spark-chg ' + cl(pct) + '">' + (hasPrice ? arw(pct) + ' ' + fmtPct(pct) : 'Chargement…') + '</div>' +
+  '<div class="spark-src">' + (d && d.src ? d.src : '') + (d && d.ts ? ' ' + fmtAgo(d.ts.getTime()) : '') + '</div>' +
+  '<canvas class="spark-canvas" id="sk-' + a.id + '"></canvas>';
 grid.appendChild(card);
 
-// Dessiner sparkline si données
-if (buf.length > 2) {
-  setTimeout(() => {
-    const c = document.getElementById('sk-' + a.id);
+if (chartData.length >= 2) {
+  setTimeout(function() {
+    var c = document.getElementById('sk-' + a.id);
     if (!c) return;
-    if (APP.sparkCharts[a.id]) APP.sparkCharts[a.id].destroy();
-    APP.sparkCharts[a.id] = new Chart(c, {
-      type: 'line',
-      data: { labels: buf.map(() => ''), datasets: [{ data: buf.map(p => p.v), borderColor: color, borderWidth: 1, fill: false, tension: 0.4, pointRadius: 0 }] },
-      options: { responsive: false, animation: false, plugins: { legend: { display: false }, tooltip: { enabled: false } }, scales: { x: { display: false }, y: { display: false } } }
-    });
+    try {
+      APP.sparkCharts[a.id] = new Chart(c, {
+        type: 'line',
+        data: { labels: chartData.map(function() { return ''; }), datasets: [{ data: chartData, borderColor: color, borderWidth: 1, fill: false, tension: 0.4, pointRadius: 0 }] },
+        options: { responsive: false, animation: false, plugins: { legend: { display: false }, tooltip: { enabled: false } }, scales: { x: { display: false }, y: { display: false } } }
+      });
+    } catch {}
   }, 0);
 }
 ```
@@ -330,94 +327,95 @@ if (buf.length > 2) {
 
 // ── WATCHLIST ─────────────────────────────────────────
 function renderWatchlist() {
-const all = […CFG.assets.indices, …CFG.assets.crypto, …CFG.assets.us, …CFG.assets.eu];
-const container = document.getElementById(‘wl-list’);
-if (!container) return;
-container.innerHTML = all.map(a => {
-const d = DATA.prices[a.id];
-const color = a.nat === ‘EUR’ ? ‘var(–cyan)’ : [‘btc’,‘eth’,‘sol’,‘bnb’,‘xrp’,‘ada’].includes(a.id) ? ‘var(–gold)’ : ‘var(–green)’;
-const pct = d?.pct || 0;
-return `<div class="wl-item"> <div class="wl-dot" style="background:${d?.price > 0 ? color : 'var(--muted)'}"></div> <div class="wl-name">${a.name}</div> <div class="wl-price">${d?.price > 0 ? DATA.fmt(a.id, APP.currency) : '—'}</div> <div class="wl-chg ${cl(pct)}">${d?.price > 0 ? fmtPct(pct) : '—'}</div> <div class="wl-src">${d?.src || ''}<br>${d?.ts ? fmtAgo(d.ts.getTime()) : ''}</div> </div>`;
+var all = CFG.assets.indices.concat(CFG.assets.crypto).concat(CFG.assets.us).concat(CFG.assets.eu);
+var el = document.getElementById(‘wl-list’);
+if (!el) return;
+el.innerHTML = all.map(function(a) {
+var d = DATA.prices[a.id];
+var pct = d ? d.pct : 0;
+var color = [‘btc’,‘eth’,‘sol’,‘bnb’,‘xrp’,‘ada’].includes(a.id) ? ‘var(–gold)’ : a.nat === ‘EUR’ ? ‘var(–cyan)’ : ‘var(–green)’;
+return ‘<div class="wl-item">’ +
+‘<div class="wl-dot" style="background:' + (d && d.price > 0 ? color : 'var(--muted)') + '"></div>’ +
+‘<div class="wl-name">’ + a.name + ‘</div>’ +
+‘<div class="wl-price">’ + (d && d.price > 0 ? DATA.fmt(a.id, APP.currency) : ‘—’) + ‘</div>’ +
+‘<div class="wl-chg ' + cl(pct) + '">’ + (d && d.price > 0 ? fmtPct(pct) : ‘—’) + ‘</div>’ +
+‘<div class="wl-src">’ + (d && d.src ? d.src : ‘’) + ‘<br>’ + (d && d.ts ? fmtAgo(d.ts.getTime()) : ‘’) + ‘</div>’ +
+‘</div>’;
 }).join(’’);
 }
 
-// ── POSITIONS OUVERTES ────────────────────────────────
+// ── POSITIONS ─────────────────────────────────────────
 function renderPositions() {
-const container = document.getElementById(‘positions-list’);
-if (!container) return;
-
-if (TRADING.positions.length === 0) {
-container.innerHTML = ‘<div class="no-data-msg" style="padding:32px 0">Aucune position ouverte</div>’;
+var el = document.getElementById(‘positions-list’);
+if (!el) return;
+if (!TRADING.positions.length) {
+el.innerHTML = ‘<div class="no-data-msg" style="padding:32px 0">Aucune position ouverte</div>’;
 return;
 }
-
 TRADING.updatePnL(DATA.prices);
+el.innerHTML = TRADING.positions.map(function(pos) {
+return ‘<div class="position-card">’ +
+‘<div class="pos-head"><span class="pos-name">’ + pos.assetName + ‘</span><span class="pos-side ' + pos.side.toLowerCase() + '">’ + pos.side + ‘</span></div>’ +
+‘<div class="pos-pnl ' + (pos.pnlPct >= 0 ? 'up' : 'dn') + '">’ + arw(pos.pnlPct) + ’ ’ + fmtPct(pos.pnlPct) + ‘</div>’ +
+‘<div class="pos-grid">’ +
+‘<div><div class="signal-item-label">Entrée</div><div class="signal-item-value">’ + pos.entryPrice.toFixed(4) + ‘</div></div>’ +
+‘<div><div class="signal-item-label">Actuel</div><div class="signal-item-value">’ + ((pos.currentPrice || pos.entryPrice).toFixed(4)) + ‘</div></div>’ +
+‘<div><div class="signal-item-label">Taille</div><div class="signal-item-value">’ + pos.notional.toFixed(0) + ’ USDT</div></div>’ +
+‘<div><div class="signal-item-label">TP</div><div class="signal-item-value up">’ + pos.takeProfit.toFixed(4) + ‘</div></div>’ +
+‘<div><div class="signal-item-label">SL</div><div class="signal-item-value dn">’ + pos.stopLoss.toFixed(4) + ‘</div></div>’ +
+‘<div><div class="signal-item-label">Ouvert</div><div class="signal-item-value">’ + fmtAgo(pos.ts) + ‘</div></div>’ +
+‘</div>’ +
+‘<div style="font-family:var(--mono);font-size:10px;color:var(--muted2);margin-bottom:10px">’ + (pos.raison || ‘’) + ‘</div>’ +
+‘<button class="close-btn" onclick="closePosition(\'' + pos.id + '\')">✕ Fermer</button>’ +
+‘</div>’;
+}).join(’’);
+}
 
-container.innerHTML = TRADING.positions.map(pos => ` <div class="position-card"> <div class="pos-head"> <span class="pos-name">${pos.assetName}</span> <span class="pos-side ${pos.side.toLowerCase()}">${pos.side}</span> </div> <div class="pos-grid"> <div><div class="signal-item-label">Entrée</div><div class="signal-item-value">${pos.entryPrice.toFixed(4)}</div></div> <div><div class="signal-item-label">Prix actuel</div><div class="signal-item-value">${(pos.currentPrice||pos.entryPrice).toFixed(4)}</div></div> <div><div class="signal-item-label">Taille</div><div class="signal-item-value">${pos.notional.toFixed(0)} USDT</div></div> <div><div class="signal-item-label">TP</div><div class="signal-item-value up">${pos.takeProfit.toFixed(4)}</div></div> <div><div class="signal-item-label">SL</div><div class="signal-item-value dn">${pos.stopLoss.toFixed(4)}</div></div> <div><div class="signal-item-label">Ouvert</div><div class="signal-item-value">${fmtAgo(pos.ts)}</div></div> </div> <div class="pos-pnl ${pos.pnlPct >= 0 ? 'up' : 'dn'}">${arw(pos.pnlPct)} ${fmtPct(pos.pnlPct)}</div> <div style="font-family:var(--mono);font-size:10px;color:var(--muted2);margin-bottom:10px">${pos.raison}</div> <button class="close-btn" onclick="closePosition('${pos.id}')">✕ Fermer la position</button> </div>`).join(’’);
+function renderPerformance() {
+var s = TRADING.summary();
+var fields = {
+‘perf-daily’:   { val: s.dailyPnl + ‘%’,   cls: parseFloat(s.dailyPnl) >= 0 ? ‘up’ : ‘dn’ },
+‘perf-total’:   { val: s.totalPnlPct + ‘%’, cls: parseFloat(s.totalPnlPct) >= 0 ? ‘up’ : ‘dn’ },
+‘perf-winrate’: { val: s.winRate + ‘%’,      cls: ‘gold’ },
+‘perf-trades’:  { val: s.totalTrades,        cls: ‘’ },
+};
+Object.entries(fields).forEach(function(entry) {
+var el = document.getElementById(entry[0]);
+if (el) { el.textContent = entry[1].val; el.className = ’perf-value ’ + entry[1].cls; }
+});
 }
 
 async function closePosition(id) {
 if (!confirm(‘Fermer cette position maintenant ?’)) return;
 try {
-const result = await TRADING.closePosition(id);
-toast(`Position fermée — P&L: ${fmtPct(result.pnlPct)}`, result.pnlPct >= 0 ? ‘success’ : ‘error’);
-renderPositions();
-renderPerformance();
-} catch (e) {
-toast(’Erreur: ’ + e.message, ‘error’);
-}
-}
-
-// ── PERFORMANCE ───────────────────────────────────────
-function renderPerformance() {
-const s = TRADING.summary();
-const fields = {
-‘perf-daily’:    { val: s.dailyPnl + ‘%’, cls: parseFloat(s.dailyPnl) >= 0 ? ‘up’ : ‘dn’ },
-‘perf-total’:    { val: s.totalPnlPct + ‘%’, cls: parseFloat(s.totalPnlPct) >= 0 ? ‘up’ : ‘dn’ },
-‘perf-winrate’:  { val: s.winRate + ‘%’, cls: ‘gold’ },
-‘perf-trades’:   { val: s.totalTrades, cls: ‘’ },
-};
-Object.entries(fields).forEach(([id, f]) => {
-const el = document.getElementById(id);
-if (el) { el.textContent = f.val; el.className = ’perf-value ’ + f.cls; }
-});
+var result = await TRADING.closePosition(id);
+toast(’Position fermée — P&L: ’ + fmtPct(result.pnlPct), result.pnlPct >= 0 ? ‘success’ : ‘error’);
+renderPositions(); renderPerformance();
+} catch(e) { toast(’Erreur: ’ + e.message, ‘error’); }
 }
 
 // ── SCAN IA ───────────────────────────────────────────
 async function runScan() {
 if (APP.scanning) return;
 APP.scanning = true;
-
-const btn = document.getElementById(‘scan-btn’);
-const status = document.getElementById(‘scan-status’);
+var btn = document.getElementById(‘scan-btn’);
+var status = document.getElementById(‘scan-status’);
 if (btn) btn.disabled = true;
 if (status) status.textContent = ‘⟳ Analyse en cours…’;
-
 try {
-const signals = await AI.scanOpportunities((i, total, name) => {
-if (status) status.textContent = `⟳ Analyse ${name} (${i}/${total})…`;
+var signals = await AI.scanOpportunities(function(i, total, name) {
+if (status) status.textContent = ‘⟳ ’ + name + ’ (’ + i + ‘/’ + total + ‘)…’;
 });
-
-```
 renderSignals(signals);
-
-if (status) status.textContent = `${signals.length} opportunité(s) trouvée(s) · ${new Date().toLocaleTimeString('fr-FR')}`;
-
-// Auto-trade : passer les ordres si activé
+if (status) status.textContent = signals.length + ’ opportunité(s) · ’ + new Date().toLocaleTimeString(‘fr-FR’);
 if (APP.autoTradeEnabled && signals.length > 0) {
-  for (const sig of signals.slice(0, 1)) { // Max 1 ordre par scan
-    try {
-      await TRADING.placeOrder(sig);
-      toast(`🤖 Ordre passé: ${sig.action} ${sig.assetName} (confiance: ${sig.confidence}%)`, 'success');
-      renderPositions();
-    } catch (e) {
-      toast(`⚠️ Ordre refusé: ${e.message}`, 'warning');
-    }
-  }
+try {
+await TRADING.placeOrder(signals[0]);
+toast(’🤖 Ordre: ’ + signals[0].action + ’ ’ + signals[0].assetName, ‘success’);
+renderPositions();
+} catch(e) { toast(’⚠️ ’ + e.message, ‘warning’); }
 }
-```
-
-} catch (e) {
+} catch(e) {
 if (status) status.textContent = ’Erreur: ’ + e.message;
 toast(’Scan échoué: ’ + e.message, ‘error’);
 } finally {
@@ -427,154 +425,163 @@ if (btn) btn.disabled = false;
 }
 
 function renderSignals(signals) {
-const container = document.getElementById(‘signals-list’);
-if (!container) return;
-
-if (!signals || signals.length === 0) {
-container.innerHTML = ‘<div class="no-data-msg" style="padding:32px 0">Aucun signal détecté — relance le scan</div>’;
+var el = document.getElementById(‘signals-list’);
+if (!el) return;
+if (!signals || !signals.length) {
+el.innerHTML = ‘<div class="no-data-msg" style="padding:32px 0">Aucun signal — relance le scan</div>’;
 return;
 }
-
-container.innerHTML = signals.map(s => {
-const badgeCls = s.action === ‘BUY’ ? ‘buy’ : s.action === ‘SELL’ ? ‘sell’ : ‘hold’;
-const chips = (s.techScore1h !== null ? [{msg: `Score 1H: ${s.techScore1h}`, bullish: s.techScore1h > 0}] : []);
-
-```
-return `<div class="signal-card ${badgeCls}">
-  <div class="signal-head">
-    <span class="signal-name">${s.assetName}</span>
-    <span class="signal-badge ${badgeCls}">${s.action}</span>
-  </div>
-  <div class="confidence-bar"><div class="confidence-fill" style="width:${s.confidence}%"></div></div>
-  <div class="signal-grid">
-    <div><div class="signal-item-label">Entrée</div><div class="signal-item-value">${s.prix_entree?.toFixed(4)}</div></div>
-    <div><div class="signal-item-label">TP</div><div class="signal-item-value up">${s.take_profit?.toFixed(4)}</div></div>
-    <div><div class="signal-item-label">SL</div><div class="signal-item-value dn">${s.stop_loss?.toFixed(4)}</div></div>
-    <div><div class="signal-item-label">Gain potentiel</div><div class="signal-item-value up">+${s.gain_potentiel_pct?.toFixed(2)}%</div></div>
-    <div><div class="signal-item-label">Risque</div><div class="signal-item-value dn">-${s.risque_pct?.toFixed(2)}%</div></div>
-    <div><div class="signal-item-label">R/R</div><div class="signal-item-value">${s.ratio_rr?.toFixed(2)}</div></div>
-  </div>
-  <div class="signal-reason">${s.raison}</div>
-  <div class="signal-indicators">
-    <span class="ind-chip">${s.tendance}</span>
-    <span class="ind-chip">${s.horizon}</span>
-    <span class="ind-chip">Confiance ${s.confidence}%</span>
-    ${chips.map(c => `<span class="ind-chip ${c.bullish?'bull':'bear'}">${c.msg}</span>`).join('')}
-    ${s.fallback ? '<span class="ind-chip">⚠️ Technique seul</span>' : ''}
-  </div>
-  ${CFG.keys.hasBinance() ? `<button class="trade-btn ${badgeCls}" onclick="executeTrade(${JSON.stringify(s).replace(/"/g,"'")})">
-    ${s.action === 'BUY' ? '▲ ACHETER' : '▼ VENDRE'} ${s.assetName}
-  </button>` : '<div class="no-data-msg" style="padding:8px 0">Configure ta clé Binance pour trader</div>'}
-</div>`;
-```
-
+el.innerHTML = signals.map(function(s) {
+var bc = s.action === ‘BUY’ ? ‘buy’ : s.action === ‘SELL’ ? ‘sell’ : ‘hold’;
+return ‘<div class="signal-card ' + bc + '">’ +
+‘<div class="signal-head"><span class="signal-name">’ + s.assetName + ‘</span><span class="signal-badge ' + bc + '">’ + s.action + ‘</span></div>’ +
+‘<div class="confidence-bar"><div class="confidence-fill" style="width:' + s.confidence + '%"></div></div>’ +
+‘<div class="signal-grid">’ +
+‘<div><div class="signal-item-label">Entrée</div><div class="signal-item-value">’ + (s.prix_entree || 0).toFixed(4) + ‘</div></div>’ +
+‘<div><div class="signal-item-label">TP</div><div class="signal-item-value up">’ + (s.take_profit || 0).toFixed(4) + ‘</div></div>’ +
+‘<div><div class="signal-item-label">SL</div><div class="signal-item-value dn">’ + (s.stop_loss || 0).toFixed(4) + ‘</div></div>’ +
+‘<div><div class="signal-item-label">Gain pot.</div><div class="signal-item-value up">+’ + (s.gain_potentiel_pct || 0).toFixed(2) + ‘%</div></div>’ +
+‘<div><div class="signal-item-label">Risque</div><div class="signal-item-value dn">-’ + (s.risque_pct || 0).toFixed(2) + ‘%</div></div>’ +
+‘<div><div class="signal-item-label">R/R</div><div class="signal-item-value">’ + (s.ratio_rr || 0).toFixed(2) + ‘</div></div>’ +
+‘</div>’ +
+‘<div class="signal-reason">’ + (s.raison || ‘’) + ‘</div>’ +
+‘<div class="signal-indicators">’ +
+‘<span class="ind-chip">’ + (s.tendance || ‘NEUTRE’) + ‘</span>’ +
+‘<span class="ind-chip">’ + (s.horizon || ‘—’) + ‘</span>’ +
+’<span class="ind-chip">Confiance ’ + s.confidence + ‘%</span>’ +
+(s.fallback ? ‘<span class="ind-chip">⚠️ Technique seul</span>’ : ‘’) +
+‘</div>’ +
+(CFG.keys.hasBinance()
+? ‘<button class=“trade-btn ’ + bc + ‘” onclick=“executeTrade(’ + JSON.stringify(s).replace(/”/g,”’”) + ‘)”>’ + (s.action === ‘BUY’ ? ’▲ ACHETER ’ : ‘▼ VENDRE ‘) + s.assetName + ‘</button>’
+: ‘<div class="no-data-msg" style="padding:8px 0;font-size:10px">Configure ta clé Binance pour trader</div>’) +
+‘</div>’;
 }).join(’’);
 }
 
 async function executeTrade(signal) {
 try {
-const result = await TRADING.placeOrder(signal);
-toast(`✅ Ordre exécuté: ${signal.action} ${signal.assetName}`, ‘success’);
+await TRADING.placeOrder(signal);
+toast(’✅ Ordre: ’ + signal.action + ’ ’ + signal.assetName, ‘success’);
 renderPositions();
-} catch (e) {
-toast(`❌ ${e.message}`, ‘error’, 6000);
-}
+} catch(e) { toast(’❌ ’ + e.message, ‘error’, 6000); }
 }
 
 // ── NEWS ──────────────────────────────────────────────
 async function fetchNews() {
-const R2J = ‘https://api.rss2json.com/v1/api.json?count=6&rss_url=’;
-const FEEDS = [
-{ url: ‘https://feeds.finance.yahoo.com/rss/2.0/headline?s=^FCHI&region=FR&lang=fr-FR’, src: ‘Yahoo’, tag: ‘MARCHÉ’ },
-{ url: ‘https://feeds.feedburner.com/reuters/businessNews’, src: ‘Reuters’, tag: ‘MACRO’ },
-{ url: ‘https://www.coindesk.com/arc/outboundfeeds/rss/’, src: ‘CoinDesk’, tag: ‘CRYPTO’ },
-{ url: ‘https://cointelegraph.com/rss’, src: ‘CoinTelegraph’, tag: ‘CRYPTO’ },
-{ url: ‘https://www.lefigaro.fr/rss/figaro_bourse.xml’, src: ‘Le Figaro’, tag: ‘CAC40’ },
+var R2J = ‘https://api.rss2json.com/v1/api.json?count=6&rss_url=’;
+var FEEDS = [
+{ url: ‘https://feeds.feedburner.com/reuters/businessNews’,    src: ‘Reuters’,   tag: ‘MACRO’  },
+{ url: ‘https://www.coindesk.com/arc/outboundfeeds/rss/’,      src: ‘CoinDesk’,  tag: ‘CRYPTO’ },
+{ url: ‘https://cointelegraph.com/rss’,                         src: ‘CoinTel.’,  tag: ‘CRYPTO’ },
+{ url: ‘https://www.lefigaro.fr/rss/figaro_bourse.xml’,        src: ‘Le Figaro’, tag: ‘CAC40’  },
+{ url: ‘https://cnbc.com/id/10001147/device/rss/rss.html’,     src: ‘CNBC’,      tag: ‘TECH’   },
 ];
-const TC = { MARCHÉ:‘var(–cyan)’, MACRO:‘var(–gold)’, CRYPTO:‘var(–green)’, CAC40:‘var(–cyan)’, TECH:‘var(–purple)’ };
+var TC = { MARCHÉ:‘var(–cyan)’, MACRO:‘var(–gold)’, CRYPTO:‘var(–green)’, CAC40:‘var(–cyan)’, TECH:‘var(–purple)’ };
 function gTag(t, def) {
-const l = t.toLowerCase();
+var l = (t || ‘’).toLowerCase();
 if (/bitcoin|crypto|btc|eth|blockchain/.test(l)) return ‘CRYPTO’;
-if (/cac|lvmh|euronext|paris bourse/.test(l)) return ‘CAC40’;
+if (/cac|lvmh|euronext/.test(l)) return ‘CAC40’;
 if (/fed|bce|inflation|taux|récession/.test(l)) return ‘MACRO’;
+if (/nvidia|apple|tesla|tech|ia |ai /.test(l)) return ‘TECH’;
 return def;
 }
-
-const results = await Promise.allSettled(FEEDS.map(async f => {
-const r = await fetch(R2J + encodeURIComponent(f.url));
-const d = await r.json();
+var results = await Promise.allSettled(FEEDS.map(async function(f) {
+var ctrl = new AbortController();
+var t = setTimeout(function() { ctrl.abort(); }, 8000);
+try {
+var r = await fetch(R2J + encodeURIComponent(f.url), { signal: ctrl.signal });
+clearTimeout(t);
+var d = await r.json();
 if (d.status !== ‘ok’) return [];
-return d.items.slice(0, 5).map(i => ({
-title: i.title, link: i.link, date: i.pubDate,
-src: f.src, tag: gTag(i.title, f.tag), col: TC[gTag(i.title, f.tag)] || ‘var(–cyan)’
-})).filter(i => i.title);
+return d.items.slice(0, 5).map(function(i) {
+var tag = gTag(i.title, f.tag);
+return { title: i.title, link: i.link, date: i.pubDate, src: f.src, tag: tag, col: TC[tag] || ‘var(–cyan)’ };
+}).filter(function(i) { return i.title; });
+} catch(e) { clearTimeout(t); return []; }
 }));
-
-let items = [];
-results.forEach(r => { if (r.status === ‘fulfilled’) items = items.concat(r.value); });
-
+var items = [];
+results.forEach(function(r) { if (r.status === ‘fulfilled’) items = items.concat(r.value); });
 if (items.length > 0) {
-const seen = new Set();
-APP.allNews = items.filter(i => { const k = i.title.slice(0, 40); if (seen.has(k)) return false; seen.add(k); return true; })
-.sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 30);
-const statusEl = document.getElementById(‘news-status’);
-if (statusEl) statusEl.textContent = `${APP.allNews.length} articles · ${new Date().toLocaleTimeString('fr-FR', {hour:'2-digit',minute:'2-digit'})}`;
+var seen = new Set();
+APP.allNews = items.filter(function(i) {
+var k = i.title.slice(0, 40);
+if (seen.has(k)) return false; seen.add(k); return true;
+}).sort(function(a, b) { return new Date(b.date) - new Date(a.date); }).slice(0, 30);
+var st = document.getElementById(‘news-status’);
+if (st) st.textContent = APP.allNews.length + ’ articles · ’ + new Date().toLocaleTimeString(‘fr-FR’, {hour:‘2-digit’,minute:‘2-digit’});
+updateSentiment();
 }
 renderNews();
+}
+
+function updateSentiment() {
+var pos = [‘hausse’,‘monte’,‘rebond’,‘record’,‘growth’,‘surge’,‘rally’];
+var neg = [‘baisse’,‘chute’,‘recul’,‘crash’,‘fall’,‘drop’,‘decline’];
+var s = 50;
+APP.allNews.slice(0, 10).forEach(function(n) {
+var l = (n.title || ‘’).toLowerCase();
+pos.forEach(function(w) { if (l.includes(w)) s += 3; });
+neg.forEach(function(w) { if (l.includes(w)) s -= 3; });
+});
+s = Math.max(10, Math.min(90, s));
+var el = document.getElementById(‘sent-val’);
+var sub = document.getElementById(‘sent-sub’);
+if (el) { el.textContent = s >= 60 ? ‘😊 Haussier’ : s <= 40 ? ‘😟 Baissier’ : ‘😐 Neutre’; el.style.color = s >= 60 ? ‘var(–green)’ : s <= 40 ? ‘var(–red)’ : ‘var(–gold)’; }
+if (sub) sub.textContent = ’Score ’ + s + ‘/100’;
 }
 
 function filterNews(f, btn) {
 APP.newsFilter = f;
-document.querySelectorAll(’.nfbtn’).forEach(b => b.classList.remove(‘on’));
-btn.classList.add(‘on’);
+document.querySelectorAll(’.nfbtn’).forEach(function(b) { b.classList.remove(‘on’); });
+if (btn) btn.classList.add(‘on’);
 renderNews();
 }
 
 function renderNews() {
-const items = APP.newsFilter === ‘all’ ? APP.allNews : APP.allNews.filter(n => n.tag === APP.newsFilter);
-const el = document.getElementById(‘newsfeed’);
+var items = APP.newsFilter === ‘all’ ? APP.allNews : APP.allNews.filter(function(n) { return n.tag === APP.newsFilter; });
+var el = document.getElementById(‘newsfeed’);
 if (!el) return;
-if (!items.length) { el.innerHTML = ‘<div class="no-data-msg">Aucun article</div>’; return; }
-const relT = d => { const m = Math.floor((Date.now() - new Date(d)) / 60000); return m < 1 ? ‘Maintenant’ : m < 60 ? m + ‘min’ : Math.floor(m/60) + ‘h’; };
-el.innerHTML = items.map(n => ` <div class="news-item" onclick="window.open('${n.link}','_blank')"> <div class="news-dot" style="background:${n.col}"></div> <div style="flex:1"> <div class="news-title">${n.title}</div> <div class="news-meta"> <span>${n.src}</span><span>${relT(n.date)}</span> <span class="news-tag" style="color:${n.col};background:${n.col}22">${n.tag}</span> </div> </div> <span style="color:var(--muted);padding-left:4px">›</span> </div>`).join(’’);
+if (!items.length) { el.innerHTML = ‘<div class="no-data-msg">Chargement des actualités…</div>’; return; }
+function relT(d) { var m = Math.floor((Date.now() - new Date(d)) / 60000); return m < 1 ? ‘Maintenant’ : m < 60 ? m + ‘min’ : Math.floor(m/60) + ‘h’; }
+el.innerHTML = items.map(function(n) {
+return ‘<div class="news-item" onclick="window.open(\'' + n.link + '\',\'_blank\')">’ +
+‘<div class="news-dot" style="background:' + n.col + '"></div>’ +
+‘<div style="flex:1"><div class="news-title">’ + n.title + ‘</div>’ +
+‘<div class="news-meta"><span>’ + n.src + ‘</span><span>’ + relT(n.date) + ‘</span>’ +
+‘<span class="news-tag" style="color:' + n.col + ';background:' + n.col + '22">’ + n.tag + ‘</span></div></div>’ +
+‘<span style="color:var(--muted);padding-left:4px">›</span></div>’;
+}).join(’’);
 }
 
 // ── AI CHAT ───────────────────────────────────────────
 async function chatSend() {
-const inp = document.getElementById(‘chat-inp’);
-const btn = document.getElementById(‘chat-btn’);
-const q = inp.value.trim();
+var inp = document.getElementById(‘chat-inp’);
+var btn = document.getElementById(‘chat-btn’);
+var q = inp ? inp.value.trim() : ‘’;
 if (!q || btn.disabled) return;
-
 addChatMsg(q, ‘user’);
-inp.value = ‘’;
+if (inp) inp.value = ‘’;
 btn.disabled = true;
-
-const loading = addChatMsg(‘⟳ Analyse en cours…’, ‘ai’);
-
+var loading = addChatMsg(‘⟳ Analyse en cours…’, ‘ai’);
 try {
-const mkt = updateMarketStatus();
-const reply = await AI.chat(q, {
+var mkt = updateMarketStatus();
+var reply = await AI.chat(q, {
 euOpen: mkt.euOpen, usOpen: mkt.usOpen,
 portfolioValue: TRADING.totalBalance ? TRADING.totalBalance.toFixed(2) + ’ USDT’ : ‘N/A’,
-dailyPnl: TRADING.dailyPnl ? fmtPct(TRADING.dailyPnl) : ‘N/A’,
+dailyPnl: fmtPct(TRADING.dailyPnl),
 });
 loading.querySelector(’.chat-bubble’).textContent = reply;
-} catch (e) {
+} catch(e) {
 loading.querySelector(’.chat-bubble’).textContent = ’⚠️ ’ + e.message;
-} finally {
-btn.disabled = false;
-}
+} finally { btn.disabled = false; }
 }
 
 function addChatMsg(text, role) {
-const msgs = document.getElementById(‘chat-msgs’);
-const el = document.createElement(‘div’);
+var msgs = document.getElementById(‘chat-msgs’);
+var el = document.createElement(‘div’);
 el.className = ’chat-msg ’ + role;
-const avatar = role === ‘ai’
-? `<div class="chat-avatar" style="background:linear-gradient(135deg,var(--cyan),var(--green))">✨</div>`
-: `<div class="chat-avatar" style="background:var(--bg2)">👤</div>`;
-el.innerHTML = avatar + `<div class="chat-bubble">${text}</div>`;
+var av = role === ‘ai’ ? ‘<div class="chat-avatar" style="background:linear-gradient(135deg,var(--cyan),var(--green))">✨</div>’ : ‘<div class="chat-avatar" style="background:var(--bg2)">👤</div>’;
+el.innerHTML = av + ‘<div class="chat-bubble">’ + text + ‘</div>’;
 msgs.appendChild(el);
 msgs.scrollTop = msgs.scrollHeight;
 return el;
@@ -582,141 +589,160 @@ return el;
 
 // ── SETTINGS ──────────────────────────────────────────
 function saveSettings() {
-const fields = {
-‘_to_g’:  ‘set-gemini’,
-‘_to_f’:  ‘set-finnhub’,
-‘_to_bk’: ‘set-bk’,
-‘_to_bs’: ‘set-bs’,
-‘_to_av’: ‘set-av’,
-};
-let saved = 0;
-Object.entries(fields).forEach(([key, id]) => {
-const val = document.getElementById(id)?.value?.trim();
-if (val) { localStorage.setItem(key, val); saved++; }
+var fields = {’_to_g’:‘set-gemini’,’_to_f’:‘set-finnhub’,’_to_bk’:‘set-bk’,’_to_bs’:‘set-bs’,’_to_av’:‘set-av’};
+var saved = 0;
+Object.entries(fields).forEach(function(entry) {
+var el = document.getElementById(entry[1]);
+var val = el ? el.value.trim() : ‘’;
+if (val) { localStorage.setItem(entry[0], val); saved++; }
 });
-
-// Paramètres de trading
-const maxRisk = parseFloat(document.getElementById(‘set-maxrisk’)?.value);
-const minConf = parseInt(document.getElementById(‘set-minconf’)?.value);
-if (!isNaN(maxRisk)) CFG.trading.maxRiskPerTrade = maxRisk / 100;
-if (!isNaN(minConf)) CFG.trading.minConfidence = minConf;
-
-toast(`✅ ${saved} clé(s) sauvegardée(s)`, ‘success’);
+var mr = document.getElementById(‘set-maxrisk’);
+var mc = document.getElementById(‘set-minconf’);
+if (mr && !isNaN(parseFloat(mr.value))) CFG.trading.maxRiskPerTrade = parseFloat(mr.value) / 100;
+if (mc && !isNaN(parseInt(mc.value))) CFG.trading.minConfidence = parseInt(mc.value);
+toast(‘✅ ’ + saved + ’ clé(s) sauvegardée(s)’, ‘success’);
 }
 
 // ── RENDER ALL ────────────────────────────────────────
 function renderAll() {
 renderKPI();
 renderTicker();
-if (APP.activeTab === ‘markets’) renderSparklines();
+if (APP.activeTab === ‘markets’)   { renderSparklines(); renderMainChart(); }
 if (APP.activeTab === ‘watchlist’) renderWatchlist();
 if (APP.activeTab === ‘portfolio’) { renderPositions(); renderPerformance(); }
-renderMainChart();
 }
 
 // ── INIT ──────────────────────────────────────────────
 async function initApp() {
-const gemini  = (localStorage.getItem(’_to_g’) || ‘’).trim();
-const finnhub = (localStorage.getItem(’_to_f’) || ‘’).trim();
-
-// Toujours cacher le setup ici (launchApp() l’a déjà caché)
-document.getElementById(‘setup-screen’).style.display = ‘none’;
+var gemini  = (localStorage.getItem(’_to_g’) || ‘’).trim();
+var finnhub = (localStorage.getItem(’_to_f’) || ‘’).trim();
 
 if (gemini.length < 6 || finnhub.length < 6) {
-// Clés manquantes → re-afficher setup
 document.getElementById(‘setup-screen’).style.display = ‘flex’;
+hideLoading();
 return;
 }
-
-// Loading
-setLoading(‘Initialisation…’, 5);
+document.getElementById(‘setup-screen’).style.display = ‘none’;
+setLoading(‘Initialisation…’, 10);
 
 // Init modules
 DATA.init();
 TRADING.load();
 
-// Horloge + marché
-setInterval(() => {
-const el = document.getElementById(‘clock’);
+// Horloge
+setInterval(function() {
+var el = document.getElementById(‘clock’);
 if (el) el.textContent = new Date().toLocaleTimeString(‘fr-FR’, { hour12: false });
 }, 1000);
 setInterval(updateMarketStatus, 60000);
 updateMarketStatus();
 
-// Binance WebSocket — crypto temps réel
+// Boutons TF
+buildTFButtons();
+
+// ÉTAPE 1 : Démarrer Binance WebSocket IMMÉDIATEMENT
+setLoading(‘Connexion Binance…’, 20);
 DATA.startBinanceWS();
 
-// Chargement historique OHLCV
-setLoading(‘Chargement historique…’, 10);
-await HISTORY.initAll((done, total, name, interval, status) => {
-const pct = 10 + Math.round(done / total * 60);
-setLoading(`Historique: ${name} ${interval} (${status})`, pct);
-});
+// ÉTAPE 2 : Fetch REST live (Finnhub) — 1 seul appel groupé
+setLoading(‘Données marché…’, 40);
+await DATA.refresh().catch(function() {});
 
-// Premier fetch live
-setLoading(‘Données temps réel…’, 72);
-await DATA.refresh().catch(() => {});
-
-// Construire l’UI
-setLoading(‘Construction interface…’, 90);
-
-// Init BTC comme actif par défaut
-APP.activeChartAsset = ‘btc’;
-APP.activeFilter = ‘CRYPTO’;
-APP.activeTab = ‘markets’;
-
+// ÉTAPE 3 : Afficher l’UI avec les données disponibles
+setLoading(‘Interface…’, 80);
 renderAll();
 renderSparklines();
 
-// News
-fetchNews().catch(() => {});
-
-setLoading(‘Prêt.’, 100);
-setTimeout(() => {
+setLoading(‘Prêt !’, 100);
+setTimeout(function() {
 hideLoading();
-// Re-render après un délai pour s’assurer que Binance WS a des données
-setTimeout(() => { renderAll(); renderSparklines(); }, 2000);
-setTimeout(() => { renderAll(); renderSparklines(); }, 5000);
-}, 600);
+// Re-render à 2s (Binance WS aura des données)
+setTimeout(function() { renderAll(); renderSparklines(); }, 2000);
+setTimeout(function() { renderAll(); renderSparklines(); }, 6000);
+}, 400);
+
+// ÉTAPE 4 : Historique EN ARRIÈRE-PLAN (ne bloque pas l’UI)
+HISTORY.initBackground(function(type, id, interval, count) {
+if (type === ‘candles’ && id) {
+// Mettre à jour le graphique si l’actif actif vient de charger
+if (id === APP.activeChartAsset && interval === ‘1h’) renderMainChart();
+// Mettre à jour les sparklines pour cet actif
+var card = document.querySelector(’.spark-card[data-key=”’ + id + ‘”]’);
+if (card) renderSparklines();
+}
+if (type === ‘done’) {
+toast(‘📊 Historique chargé’, ‘success’, 3000);
+renderAll(); renderSparklines();
+}
+}).catch(function() {});
+
+// News en parallèle
+fetchNews().catch(function() {});
 
 // Event listeners
-window.addEventListener(‘prices-refreshed’, renderAll);
-window.addEventListener(‘price-update’, (e) => {
+window.addEventListener(‘prices-refreshed’, function() { renderKPI(); renderTicker(); renderSparklines(); renderMainChart(); });
+window.addEventListener(‘price-update’, function(e) {
 renderKPI();
 renderTicker();
+HISTORY.recordLivePrice(e.detail.id, DATA.prices[e.detail.id] && DATA.prices[e.detail.id].price);
 if (APP.activeTab === ‘markets’) {
-const card = document.querySelector(`.spark-card[data-key="${e.detail.id}"]`);
+// Mise à jour rapide de la sparkline card sans tout re-rendre
+var d = DATA.prices[e.detail.id];
+if (!d || !d.price) return;
+var card = document.querySelector(’.spark-card[data-key=”’ + e.detail.id + ‘”]’);
 if (card) {
-const d = DATA.prices[e.detail.id];
-if (d?.price) {
-const priceEl = card.querySelector(’.spark-price’);
-const chgEl = card.querySelector(’.spark-chg’);
-if (priceEl) priceEl.textContent = DATA.fmt(e.detail.id, APP.currency);
-if (chgEl) { chgEl.textContent = arw(d.pct) + ’ ’ + fmtPct(d.pct); chgEl.className = ’spark-chg ’ + cl(d.pct); }
+var sp = card.querySelector(’.spark-price’);
+var sc = card.querySelector(’.spark-chg’);
+if (sp) sp.textContent = DATA.fmt(e.detail.id, APP.currency);
+if (sc) { sc.textContent = arw(d.pct) + ’ ’ + fmtPct(d.pct); sc.className = ‘spark-chg ’ + cl(d.pct); }
+var dot = card.querySelector(’.spark-dot’);
+var color = [‘btc’,‘eth’,‘sol’,‘bnb’,‘xrp’,‘ada’].includes(e.detail.id) ? ‘#f0b429’ : d.nat === ‘EUR’ ? ‘#00e5ff’ : ‘#00ff88’;
+if (dot) dot.style.background = color;
 }
-}
+if (e.detail.id === APP.activeChartAsset) renderMainChart();
 }
 });
 
 // Timers
-setInterval(() => DATA.refresh().catch(() => {}), 30000);      // REST 30s
-setInterval(() => fetchNews().catch(() => {}), 600000);         // News 10min
-setInterval(() => {
-if (APP.autoTradeEnabled) runScan();                          // Scan auto
-}, CFG.trading.scanInterval * 1000);
-setInterval(() => { renderPositions(); renderPerformance(); }, 10000); // Positions 10s
+setInterval(function() { DATA.refresh().catch(function(){}); }, 30000);
+setInterval(function() { fetchNews().catch(function(){}); }, 600000);
+setInterval(function() { if (APP.autoTradeEnabled) runScan(); }, CFG.trading.scanInterval * 1000);
+setInterval(function() { renderPositions(); renderPerformance(); }, 10000);
+// Refresh historique toutes les 30min pour les crypto
+setInterval(function() {
+CFG.assets.crypto.filter(function(a) { return a.priority === 1; }).forEach(function(a) {
+HISTORY.refreshAsset(a.id, ‘1h’).catch(function(){});
+});
+}, 1800000);
 }
 
-// Setup screen submit
+function buildTFButtons() {
+var container = document.getElementById(‘tf-btns’);
+if (!container) return;
+container.innerHTML = ‘’;
+APP.TF.forEach(function(tf) {
+var btn = document.createElement(‘button’);
+btn.className = ‘tf-btn’ + (tf.id === ‘LIVE’ ? ’ on’ : ‘’);
+btn.textContent = tf.label;
+btn.onclick = function() {
+APP.activeChartTF = tf.id;
+document.querySelectorAll(’.tf-btn’).forEach(function(b) { b.classList.remove(‘on’); });
+btn.classList.add(‘on’);
+renderMainChart();
+};
+container.appendChild(btn);
+});
+}
+
+// Setup submit (inline dans HTML mais aussi ici en fallback)
 function setupSubmit() {
-const g  = document.getElementById(‘inp-gemini’)?.value?.trim();
-const f  = document.getElementById(‘inp-finnhub’)?.value?.trim();
-const bk = document.getElementById(‘inp-bk’)?.value?.trim();
-const bs = document.getElementById(‘inp-bs’)?.value?.trim();
-const av = document.getElementById(‘inp-av’)?.value?.trim();
-if (!g || g.length < 5) { alert(‘Clé Gemini invalide ou manquante’); return; }
-if (!f || f.length < 5) { alert(‘Clé Finnhub invalide ou manquante’); return; }
-// Sauvegarder directement dans localStorage
+var g  = (document.getElementById(‘inp-gemini’) && document.getElementById(‘inp-gemini’).value || ‘’).trim();
+var f  = (document.getElementById(‘inp-finnhub’) && document.getElementById(‘inp-finnhub’).value || ‘’).trim();
+var bk = (document.getElementById(‘inp-bk’) && document.getElementById(‘inp-bk’).value || ‘’).trim();
+var bs = (document.getElementById(‘inp-bs’) && document.getElementById(‘inp-bs’).value || ‘’).trim();
+var av = (document.getElementById(‘inp-av’) && document.getElementById(‘inp-av’).value || ‘’).trim();
+if (g.length < 6) { alert(‘Clé Gemini invalide’); return; }
+if (f.length < 6) { alert(‘Clé Finnhub invalide’); return; }
 localStorage.setItem(’_to_g’, g);
 localStorage.setItem(’_to_f’, f);
 if (bk) localStorage.setItem(’_to_bk’, bk);
@@ -725,5 +751,3 @@ if (av) localStorage.setItem(’_to_av’, av);
 document.getElementById(‘setup-screen’).style.display = ‘none’;
 initApp();
 }
-
-document.addEventListener(‘DOMContentLoaded’, initApp);
