@@ -616,16 +616,18 @@ renderMainChart();
 
 // ── INIT ──────────────────────────────────────────────
 async function initApp() {
-// Vérifier les clés — vérification stricte (pas vide, pas null, longueur > 5)
-const gemini  = localStorage.getItem(’_to_g’) || ‘’;
-const finnhub = localStorage.getItem(’_to_f’) || ‘’;
-const hasKeys = gemini.length > 5 && finnhub.length > 5;
+// Setup screen visible par défaut — on le cache seulement si les clés sont là
+const gemini  = (localStorage.getItem(’_to_g’) || ‘’).trim();
+const finnhub = (localStorage.getItem(’_to_f’) || ‘’).trim();
 
-if (!hasKeys) {
+if (gemini.length < 6 || finnhub.length < 6) {
+// Pas de clés → afficher setup, cacher le reste
 document.getElementById(‘setup-screen’).style.display = ‘flex’;
 document.getElementById(‘loading-overlay’).style.display = ‘none’;
 return;
 }
+
+// Clés présentes → cacher setup, lancer l’app
 document.getElementById(‘setup-screen’).style.display = ‘none’;
 
 // Loading
