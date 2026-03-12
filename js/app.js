@@ -751,3 +751,18 @@ if (av) localStorage.setItem(’_to_av’, av);
 document.getElementById(‘setup-screen’).style.display = ‘none’;
 initApp();
 }
+
+// ── EXPOSE GLOBALS ────────────────────────────────────
+window.initApp       = initApp;
+window.setupSubmit   = setupSubmit;
+window.goTab         = goTab;
+window.setCurrency   = setCurrency;
+window.toggleAutoTrade = toggleAutoTrade;
+window.setFilter     = setFilter;
+window.setActiveAsset= setActiveAsset;
+window.runScan       = runScan;
+window.executeTrade  = executeTrade;
+window.closePosition = closePosition;
+window.chatSend      = chatSend;
+window.saveSettings  = saveSettings;
+window.filterNews    = filterNews;
