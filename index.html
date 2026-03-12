@@ -46,7 +46,7 @@
   <div class="setup-hint">→ Binance → Profil → Gestion API · <strong style="color:var(--red)">Ne jamais activer "Withdrawals"</strong></div>
 </div>
 
-<button class="setup-btn" onclick="setupSubmit()">LANCER TRADE OS →</button>
+<button class="setup-btn" id="launch-btn" onclick="launchApp()">LANCER TRADE OS →</button>
 <div class="setup-warn">⚠️ Ce système peut entraîner des pertes financières. Tradez uniquement avec des sommes que vous pouvez vous permettre de perdre.</div>
 ```
 
@@ -364,6 +364,53 @@
     IA: Gemini 2.0 Flash · <a href="https://github.com/Arthu000/Traderos" target="_blank">GitHub</a>
   </div>
 </div>
+
+<!-- ═══════════════════ LAUNCH INLINE ══════════════════ -->
+
+<script>
+// Inline — ne dépend d'aucun module externe
+function launchApp() {
+  var g  = (document.getElementById('inp-gemini').value || '').trim();
+  var f  = (document.getElementById('inp-finnhub').value || '').trim();
+  var bk = (document.getElementById('inp-bk').value || '').trim();
+  var bs = (document.getElementById('inp-bs').value || '').trim();
+  var av = (document.getElementById('inp-av').value || '').trim();
+  if (g.length < 6)  { alert('Clé Gemini invalide ou manquante'); return; }
+  if (f.length < 6)  { alert('Clé Finnhub invalide ou manquante'); return; }
+  localStorage.setItem('_to_g', g);
+  localStorage.setItem('_to_f', f);
+  if (bk) localStorage.setItem('_to_bk', bk);
+  if (bs) localStorage.setItem('_to_bs', bs);
+  if (av) localStorage.setItem('_to_av', av);
+  document.getElementById('setup-screen').style.display = 'none';
+  // Attendre que les modules soient chargés
+  var tries = 0;
+  var wait = setInterval(function() {
+    tries++;
+    if (typeof initApp === 'function') {
+      clearInterval(wait);
+      initApp();
+    } else if (tries > 30) {
+      clearInterval(wait);
+      alert('Erreur de chargement — rechargez la page');
+    }
+  }, 100);
+}
+
+// Au chargement : si clés présentes → cacher setup direct
+document.addEventListener('DOMContentLoaded', function() {
+  var g = (localStorage.getItem('_to_g') || '').trim();
+  var f = (localStorage.getItem('_to_f') || '').trim();
+  if (g.length > 5 && f.length > 5) {
+    document.getElementById('setup-screen').style.display = 'none';
+  }
+  // Pré-remplir les champs si clés existantes
+  if (g) document.getElementById('inp-gemini').value = g;
+  if (f) document.getElementById('inp-finnhub').value = f;
+  var av = localStorage.getItem('_to_av') || '';
+  if (av) document.getElementById('inp-av').value = av;
+});
+</script>
 
 <!-- ═══════════════════ SCRIPTS ════════════════════════ -->
 
