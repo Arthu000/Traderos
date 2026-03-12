@@ -616,19 +616,17 @@ renderMainChart();
 
 // ── INIT ──────────────────────────────────────────────
 async function initApp() {
-// Setup screen visible par défaut — on le cache seulement si les clés sont là
 const gemini  = (localStorage.getItem(’_to_g’) || ‘’).trim();
 const finnhub = (localStorage.getItem(’_to_f’) || ‘’).trim();
 
+// Toujours cacher le setup ici (launchApp() l’a déjà caché)
+document.getElementById(‘setup-screen’).style.display = ‘none’;
+
 if (gemini.length < 6 || finnhub.length < 6) {
-// Pas de clés → afficher setup, cacher le reste
+// Clés manquantes → re-afficher setup
 document.getElementById(‘setup-screen’).style.display = ‘flex’;
-document.getElementById(‘loading-overlay’).style.display = ‘none’;
 return;
 }
-
-// Clés présentes → cacher setup, lancer l’app
-document.getElementById(‘setup-screen’).style.display = ‘none’;
 
 // Loading
 setLoading(‘Initialisation…’, 5);
